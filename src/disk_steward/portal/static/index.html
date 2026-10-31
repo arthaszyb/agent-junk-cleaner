@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Disk Steward</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/styles.css">
+<script src="/static/theme-init.js"></script>
+<script type="module" src="/static/app.mjs"></script>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="topbar" id="topbar">
+    <a class="brand" href="#/overview"><img src="/static/favicon.svg" alt="" width="30" height="30"><span class="brand-name">Disk Steward</span></a>
+    <div class="scrim" id="scrim" data-testid="scrim"></div>
+    <div class="top-panel" id="top-panel">
+      <div class="drawer-head">
+        <span class="brand"><img src="/static/favicon.svg" alt="" width="30" height="30"><span>Disk Steward</span></span>
+        <button class="icon-btn" id="side-close" type="button" data-testid="menu-close"></button>
+      </div>
+      <nav id="nav" aria-label="Main"></nav>
+      <div class="top-tools" id="top-tools"></div>
+      <div class="drawer-foot" id="drawer-foot"></div>
+    </div>
+    <span class="status-slot" id="status-top"></span>
+    <button class="icon-btn menu-btn" id="menu-button" type="button" aria-controls="top-panel" aria-expanded="false" data-testid="menu-button"></button>
+  </header>
+  <main id="main" tabindex="-1"></main>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<dialog id="dialog"></dialog>
+<noscript><p class="banner">Disk Steward needs JavaScript. / Disk Steward 需要启用 JavaScript。</p></noscript>
+</body>
+</html>

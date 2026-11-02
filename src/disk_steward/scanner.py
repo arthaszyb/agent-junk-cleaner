@@ -243,8 +243,10 @@ class _Scan:
                               cancel=self.cancel)
         tier, group_key, evidence = match.tier, match.group_key, list(match.evidence)
         # Taint guards what a cleanup would remove. A report-only rule removes nothing, and the folders it names
-        # (module caches, simulator data) are full of files that look like databases or credentials.
-        taint = '' if is_report_only(self.catalog.rule(match.rule_id)) else summary.taint
+        # (module caches, simulator data) are full of files that look like databases or credentials. One that can move
+        # a folder to the Trash (manual_actions) removes something, so its folders are guarded like any other.
+        rule = self.catalog.rule(match.rule_id)
+        taint = '' if is_report_only(rule) and not rule.manual_actions else summary.taint
         if taint:
             if tier != Tier.PROTECTED:
                 group_key = protect_group_key(group_key)

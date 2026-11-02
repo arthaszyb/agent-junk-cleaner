@@ -3,7 +3,7 @@ import { api, ApiError, clearToken, loadToken, saveToken, setUnauthorizedHandler
 import { h, replace, setErrorHandler } from './dom.mjs';
 import { load as loadMessages, t } from './i18n.mjs';
 import { initShell, renderNav } from './shell.mjs';
-import { loadState, startEvents } from './state.mjs';
+import { loadState, on, startEvents } from './state.mjs';
 import { reportError, toast } from './ui.mjs';
 import { create as advisor } from './views/advisor.mjs';
 import { create as browse } from './views/browse.mjs';
@@ -92,6 +92,10 @@ async function boot() {
   });
   initShell();
   window.addEventListener('hashchange', () => show().catch(reportError));
+  on('data_dir_recreated', (data) => {   // the data folder was deleted under the running portal: what it showed is gone
+    toast(data.message, 'warn', 30000);
+    show().catch(reportError);
+  });
   startEvents();
   await show().catch(reportError);
 }

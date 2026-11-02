@@ -50,7 +50,7 @@ COMMANDS: Mapping[str, Tuple[str, ...]] = {
     NEEDS_XCODE: ('xcrun', 'simctl', 'delete', 'unavailable'),
 }
 # Shown with their command but never run from here, and why (native.reason.<value>).
-COPY_ONLY: Mapping[str, str] = {'dev.playwright': 'copy_network', 'dev.npx': 'copy_rm'}
+COPY_ONLY: Mapping[str, str] = {'dev.playwright': 'copy_network'}
 VERSION_ARGV: Mapping[str, Tuple[str, ...]] = {'go': ('go', 'version')}
 _VERSION = re.compile(r'\d+(?:\.\d+)+')
 _OLLAMA_ROW = re.compile(r'^(\S+)\s+\S+\s+(\d+(?:\.\d+)?)\s*([KMGT]?B)\b')

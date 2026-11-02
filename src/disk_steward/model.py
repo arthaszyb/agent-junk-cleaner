@@ -116,6 +116,7 @@ class ErrorCode(_Str):
     REVISION_MISMATCH = 'REVISION_MISMATCH'  # plan was edited (exclusions) since the client looked
     IN_PROGRESS = 'IN_PROGRESS'
     UNAVAILABLE = 'UNAVAILABLE'              # e.g. advisor CLI missing, /usr/bin/trash missing
+    DATA_DIR_RECREATED = 'DATA_DIR_RECREATED'  # the data dir was deleted while running; it is back, empty (HTTP 409)
 
 
 class StewardError(Exception):
@@ -159,6 +160,9 @@ class Rule:
     priority: int = 100                        # protections 1000; specific 100-500; generic fallbacks < 100
     detector: Optional[str] = None             # detectors registry name; may refine or skip
     hint: Optional[str] = None                 # native command for report-only rules, shown verbatim
+    # Report-only rules without a native command: actions offered for one listed folder at a time from the tools
+    # table. The selection never offers them, so no bulk pick can reach a shared cache.
+    manual_actions: Tuple[Action, ...] = ()
 
     @property
     def label_key(self) -> str:

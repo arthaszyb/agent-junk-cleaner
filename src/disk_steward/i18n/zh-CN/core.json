@@ -69,6 +69,7 @@
   "error.REVISION_MISMATCH": "打开计划后它又被修改过，请刷新后重试。",
   "error.IN_PROGRESS": "其中一些条目已在执行或已结束。",
   "error.UNAVAILABLE": "这台 Mac 上无法使用该功能。",
+  "error.DATA_DIR_RECREATED": "Disk Steward 运行期间，它的数据目录被删除了。现已重新创建为空目录：其中的扫描历史、清理历史、审计日志和归档都已丢失。请重新扫描后再继续。",
   "error.busy": "另一个 Disk Steward 操作正在运行，请等它结束。",
   "error.trash_unavailable": "“移到废纸篓”需要 macOS 15 或更高版本（/usr/bin/trash）。",
   "error.invalid_path": "路径无效：{path}",
@@ -146,5 +147,6 @@
   "error.confirm_required": "当前不是终端。请加上 --yes 以免确认直接执行。",
   "error.confirm_mismatch": "确认内容不一致，未执行任何操作。",
   "attention.archive_unverified": "原文件已移除，但其归档校验不通过：{detail}",
-  "skip.last_used_unknown": "无法读取最近使用日期，因此无法判断是否闲置"
+  "skip.last_used_unknown": "无法读取最近使用日期，因此无法判断是否闲置",
+  "error.manual_not_allowed": "{rule_id} 不支持对单个文件夹执行“{action}”。"
 }

@@ -760,9 +760,9 @@ class ProjectDepsTests(Base):
 class DevSharedTests(Base):
     EXPECTED_HINTS = {
         'dev.homebrew': 'brew cleanup --prune=all', 'dev.uv': 'uv cache prune', 'dev.pip': 'pip cache purge',
-        'dev.npm': 'npm cache clean --force', 'dev.npx': 'rm -rf ~/.npm/_npx  # npx re-downloads on demand',
+        'dev.npm': 'npm cache clean --force',
         'dev.pnpm': 'pnpm store prune', 'dev.yarn': 'yarn cache clean', 'dev.go-mod': 'go clean -modcache',
-        'dev.go-build': 'go clean -cache', 'dev.cargo': 'cargo cache --autoclean  # needs cargo-cache',
+        'dev.go-build': 'go clean -cache',
         'dev.playwright': 'npx playwright uninstall --all',
         'dev.coresimulator': 'xcrun simctl delete unavailable  # with Xcode selected: sudo xcode-select -s '
                              '/Applications/Xcode.app',
@@ -777,6 +777,9 @@ class DevSharedTests(Base):
                                  ((), None, Tier.REVIEW, Unit.BUNDLE, None))
                 self.assertIn(r.kind, (Kind.CACHE, Kind.RUNTIME))
         self.assertEqual({r.id: r.hint for r in rules if r.hint}, self.EXPECTED_HINTS)
+        # a tool with no command of its own offers Move to Trash for one listed folder instead; nobody is told to rm
+        self.assertEqual({r.id for r in rules if r.manual_actions == (Action.TRASH,)}, {r.id for r in rules if not r.hint})
+        self.assertFalse(any('rm ' in (r.hint or '') for r in rules))
 
     def test_every_tool_folder_the_brief_names_is_covered(self):
         patterns = {p for r in CAT.rules if r.domain == Domain.DEV_SHARED for p in r.patterns}

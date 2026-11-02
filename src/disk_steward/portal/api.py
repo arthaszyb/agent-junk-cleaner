@@ -29,7 +29,7 @@ BYTE_ARGS = ('size', 'needed', 'free')   # warning arguments that are byte count
 STATUS = {ErrorCode.INVALID: 400, ErrorCode.NOT_FOUND: 404, ErrorCode.DIGEST_MISMATCH: 409,
           ErrorCode.REVISION_MISMATCH: 409, ErrorCode.RULES_CHANGED: 409, ErrorCode.PLAN_EXPIRED: 409,
           ErrorCode.NO_SCAN: 409, ErrorCode.EMPTY_PLAN: 422, ErrorCode.BUSY: 423, ErrorCode.IN_PROGRESS: 423,
-          ErrorCode.UNAVAILABLE: 503}
+          ErrorCode.UNAVAILABLE: 503, ErrorCode.DATA_DIR_RECREATED: 409}
 
 
 class HttpError(Exception):
@@ -151,6 +151,7 @@ class Api:
         route('GET', r'/api/insights', self.insights)
         route('GET', r'/api/native', self.native)
         route('POST', r'/api/native/run', self.native_run)
+        route('POST', r'/api/native/trash', self.native_trash)
         route('GET', r'/api/groups', self.groups)
         route('GET', r'/api/items', self.items)
         route('GET', r'/api/spec', self.spec)
@@ -182,6 +183,7 @@ class Api:
 
     def dispatch(self, method: str, path: str, query: Dict[str, str], body: Optional[Dict[str, Any]],
                  locale: str) -> Tuple[int, Json]:
+        self.app.check_data_dir()   # a deleted data dir is made again here, before the request reads or writes it
         allowed: List[str] = []
         for m, pattern, fn in self._routes:
             found = pattern.match(path)
@@ -273,7 +275,7 @@ class Api:
                 data = dict(data, reason_text=reason_text(r.locale, data['reason']))
             elif e['type'] == 'run.finished':
                 data = dict(data, summary=self._run_summary(data['summary'], r.locale))
-            elif e['type'] in ('advisor.failed', 'native.failed') and 'message_key' in data:
+            elif e['type'] in ('advisor.failed', 'native.failed', 'data_dir.recreated') and 'message_key' in data:
                 data = dict(data, message=_render(data['message_key'], r.locale, data.get('details') or {}))
             out.append(dict(e, data=data))
         # a gap means the bounded log dropped events the client never saw
@@ -338,6 +340,11 @@ class Api:
             _str(target, 'target')
         self.app.start_native(rule_id, target, command)
         return {'job': self._job(r.locale)}
+
+    def native_trash(self, r: Request) -> Json:
+        item = _body(r).get('item')
+        _str(item, 'item')
+        return self._plan_json(self.app.trash_plan(item), r.locale)  # type: ignore[arg-type]
 
     def insights(self, r: Request) -> Json:
         window = _query_int(r.query.get('window', '30'), 'window')
@@ -406,10 +413,10 @@ class Api:
         return {'total': page['total'], 'rows': rows}
 
     def spec(self, r: Request) -> Json:
-        return self._selection(self.app.selection(SESSION), r.locale)
+        return self._selection(self.app.selection(SESSION, qualify=True), r.locale)
 
     def spec_ops(self, r: Request) -> Json:
-        return self._selection(self.app.apply_ops(_body(r).get('ops'), SESSION), r.locale)  # type: ignore[arg-type]
+        return self._selection(self.app.apply_ops(_body(r).get('ops'), SESSION, qualify=True), r.locale)  # type: ignore[arg-type]
 
     def spec_notes(self, r: Request) -> Json:
         notes = self.app.spec_notes(SESSION)

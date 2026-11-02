@@ -5,7 +5,7 @@ import { delegate, h, replace } from '../dom.mjs';
 import { fmtBytes, fmtTime } from '../format.mjs';
 import { t } from '../i18n.mjs';
 import { loadState, on } from '../state.mjs';
-import { badge, copyButton, loading, pickTab, reportError, subTabs, tabPanel } from '../ui.mjs';
+import { badge, copyTextButton, loading, pickTab, reportError, subTabs, tabPanel } from '../ui.mjs';
 
 const VERDICT_KIND = { likely_safe: 'ok', review: 'warn', keep: 'neutral' };
 const PROVIDERS = ['codex', 'claude'];
@@ -63,7 +63,7 @@ export function create() {
       h('h3', { text: t('portal.advisor.manual') }),
       h('p', { class: 'muted', text: t('portal.advisor.manual_hint') }),
       h('button', { class: 'btn', disabled: !preview, data: { action: 'export' }, text: t('portal.advisor.show_prompt') }),
-      exported ? h('div', {}, h('textarea', { readonly: true, rows: '8', 'aria-label': t('portal.advisor.show_prompt'), text: exported.text }), copyButton(exported.text)) : null,
+      exported ? h('div', {}, h('textarea', { readonly: true, rows: '8', 'aria-label': t('portal.advisor.show_prompt'), text: exported.text }), copyTextButton(exported.text)) : null,
       h('label', { class: 'block' }, h('span', { text: t('portal.advisor.paste') }),
         h('textarea', { rows: '6', id: 'reply', 'data-testid': 'reply' })),
       importError ? h('p', { class: 'banner banner-danger', text: importError }) : null,

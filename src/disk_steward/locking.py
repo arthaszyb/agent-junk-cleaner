@@ -66,6 +66,12 @@ class OperationLock:
         finally:
             self._thread_lock.release()
 
+    def ensure_file(self) -> None:
+        """Make the lock file if it is missing (the data dir was deleted and made again). Whoever takes the lock next
+        locks this file; a holder of the old one sees `held` turn False."""
+        self._dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.close(os.open(self._path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600))
+
     @property
     def held(self) -> bool:
         """True while this object holds the lock (the executor checks it before and during a run). A lock file that

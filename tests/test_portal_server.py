@@ -1012,6 +1012,38 @@ class SettingsDuringARunTests(GatedRunCase):
         self.assertEqual(self.c.get('/api/job')[1]['job']['plan_state'], 'cancelled')
 
 
+class BrowseFiguresTests(PortalCase):
+    """/api/spec and /api/spec/ops carry the per-group qualifying figures the Browse rows show."""
+
+    def test_the_selection_answers_carry_figures_that_add_up_to_the_summary(self):
+        self.scan()
+        sel = self.select(JUNK_14D + [{'op': 'select_group', 'group': 'claude.projects:~/.claude/projects/-Users-me-proj', 'on': True}])
+        for answer in (sel, self.ok(self.c.get('/api/spec'))):
+            q = answer['qualify']
+            ticked = [k for k in q if k in answer['spec']['groups']]
+            self.assertEqual(sum(q[k]['items'] for k in ticked), answer['summary']['count'])
+            self.assertEqual(sum(q[k]['alloc'] for k in ticked), answer['summary']['alloc'])
+        q = sel['qualify']
+        self.assertNotIn('codex.state', q)                               # a protected group cannot be ticked
+        self.assertNotIn('ollama.models', q)                             # nor can one that only reports
+        self.assertEqual((q['claude.logs']['items'], q['claude.logs']['too_recent']), (0, 1))   # 5 days old, 14 asked
+        self.assertEqual(q['claude.logs']['min_age_days'], 14)
+
+    def test_an_unticked_group_shows_what_ticking_it_would_select(self):
+        self.scan()
+        sel = self.select([{'op': 'clear'}, {'op': 'set_filter', 'min_age_days': 14}])
+        self.assertEqual(sel['summary']['count'], 0)
+        key = 'claude.projects:~/.claude/projects/-Users-me-proj'
+        self.assertEqual(sel['qualify'][key]['items'], 3)
+        ticked = self.select([{'op': 'select_group', 'group': key, 'on': True}])
+        self.assertEqual(ticked['qualify'][key], sel['qualify'][key])
+        self.assertEqual(ticked['summary']['count'], 3)
+
+    def test_the_quick_selection_stays_as_it_was(self):
+        self.scan()
+        self.assertNotIn('qualify', self.ok(self.c.get('/api/quick')))
+
+
 class ApiFlowTests(PortalCase):
     def test_scan_select_plan_preflight_run_archive_and_advise(self):
         c = self.c

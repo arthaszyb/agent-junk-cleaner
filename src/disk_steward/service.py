@@ -32,7 +32,8 @@ from .macos import MacOS, RealMacOS
 from .model import (Action, Domain, EntryState, ErrorCode, PlanState, Spec, StatInfo, StewardError, Tier, Unit,
                     asdict)
 from .paths import Bases, default_data_dir
-from .selection import CODEX_SESSION_RULES, Resolution, _action_totals, apply_ops, migrate_spec, resolve
+from .selection import (CODEX_SESSION_RULES, Resolution, _action_totals, apply_ops, migrate_spec, qualify_groups,
+                        resolve)
 from .settings import Settings
 from .store import Store
 
@@ -72,11 +73,13 @@ class App:
             raise StewardError(ErrorCode.INVALID, 'error.invalid_locale', locale=str(locale))
         self.locale: str = locale or self._settings.locale or detect_locale()
         self.store = Store(self.data_dir / 'steward.db', clock)
+        self.store.on_recreated = self._data_dir_recreated
         self.audit = Audit(self.data_dir, clock)
         self.lock = OperationLock(self.data_dir)
         self.events = EventBus(clock=clock)
         self._catalog: Optional[Catalog] = None
         self._cache: Dict[str, Tuple[Tuple[int, int, int], Resolution]] = {}
+        self._qualify: Dict[str, Tuple[Resolution, Dict[str, Any]]] = {}   # session -> (its Resolution, figures)
         self._seen: 'collections.OrderedDict[Tuple[str, str], float]' = collections.OrderedDict()
         self._cache_lock = threading.Lock()
         self._spec_lock = threading.Lock()   # specs are read-modify-write; two portal requests must not interleave
@@ -99,6 +102,22 @@ class App:
 
     def close(self) -> None:
         self.store.close()
+
+    def check_data_dir(self) -> bool:
+        """Call where an operation starts (a portal request, a CLI command). If the data dir or the database was
+        deleted since the App opened it, make both again (see _data_dir_recreated) and return True. Work that is
+        already running does not get here: its next store call raises DATA_DIR_RECREATED."""
+        return self.store.check()
+
+    def _data_dir_recreated(self) -> None:
+        """The store made the data dir and a fresh database again. What lived only in files is gone (scans, plans,
+        history, audit log, archives, staging); the settings and the lock exist in memory or as a name, so they
+        are written back."""
+        self.lock.ensure_file()
+        if self._settings != Settings():
+            settings_mod.save(self.data_dir, self._settings)
+        self.audit.write({'event': 'data_dir.recreated'})
+        self.events.publish('data_dir.recreated', message_key='error.DATA_DIR_RECREATED')
 
     @property
     def advisor(self) -> Any:
@@ -125,6 +144,7 @@ class App:
             self._catalog = None   # rule thresholds come from settings
             with self._cache_lock:
                 self._cache.clear()
+                self._qualify.clear()
             if 'locale' in patch:
                 self.locale = new.locale or detect_locale()
             return new
@@ -164,6 +184,7 @@ class App:
             self.store.supersede_drafts(scan_id)   # a draft was made from rows that no longer exist; it must not run
             with self._cache_lock:
                 self._cache.clear()
+                self._qualify.clear()
         self._retain()
         info = self.store.scan(scan_id)
         problems = sum(n for code, n in self._error_counts(scan_id).items() if code != report.PRIVACY_CODE)
@@ -264,14 +285,31 @@ class App:
                 self._seen.popitem(last=False)
         return res
 
-    def apply_ops(self, ops: Sequence[Mapping[str, Any]], session: str = 'default') -> Dict[str, Any]:
+    def _qualify_for(self, session: str, spec: Spec, res: Resolution) -> Dict[str, Any]:
+        """selection.qualify_groups() for `res`, kept until the session resolves again. It is tied to `res` itself
+        so that its figures and res.summary always come from the same clock."""
+        with self._cache_lock:
+            hit = self._qualify.get(session)
+        if hit is not None and hit[0] is res:
+            return hit[1]
+        out = qualify_groups(self.store, spec, res, self._settings.domains, self.mac.trash_available())
+        with self._cache_lock:
+            self._qualify[session] = (res, out)
+        return out
+
+    def apply_ops(self, ops: Sequence[Mapping[str, Any]], session: str = 'default',
+                  qualify: bool = False) -> Dict[str, Any]:
+        """`qualify` adds the per-group figures of selection.qualify_groups() as 'qualify' (the portal's Browse)."""
         with self._spec_lock:
             new = apply_ops(self._spec_locked(session), ops, self.store, self._settings.domains)
             self.store.save_spec(session, new)
             self.store.delete_meta(_notes_key(session))   # the user has seen the selection and is editing it
         res = self._resolve(session, new)
-        return {'spec': new.to_json(), 'scan_id': new.scan_id, 'summary': res.summary, 'digest': res.digest,
-                'resolved_at': res.now}
+        out = {'spec': new.to_json(), 'scan_id': new.scan_id, 'summary': res.summary, 'digest': res.digest,
+               'resolved_at': res.now}
+        if qualify:
+            out['qualify'] = self._qualify_for(session, new, res)
+        return out
 
     def groups(self, domain: Optional[str] = None, tier: Optional[str] = None,
                session: str = 'default') -> List[Dict[str, Any]]:
@@ -458,12 +496,15 @@ class App:
                 alloc += e.alloc
         return {'count': count, 'alloc': alloc}
 
-    def selection(self, session: str = 'default') -> Dict[str, Any]:
+    def selection(self, session: str = 'default', qualify: bool = False) -> Dict[str, Any]:
         """The session's selection in the shape apply_ops() returns it, without changing anything."""
         spec = self.spec(session)
         res = self._resolve(session, spec)
-        return {'spec': spec.to_json(), 'scan_id': spec.scan_id, 'summary': res.summary, 'digest': res.digest,
-                'resolved_at': res.now}
+        out = {'spec': spec.to_json(), 'scan_id': spec.scan_id, 'summary': res.summary, 'digest': res.digest,
+               'resolved_at': res.now}
+        if qualify:
+            out['qualify'] = self._qualify_for(session, spec, res)
+        return out
 
     # the "safe to clean" selection and Browse's filters -----------------------------------------------------
 
@@ -768,7 +809,8 @@ class App:
                 summary['rescan'] = self._rescan(plan_id)
                 self.store.save_run_summary(plan_id, summary)
         except BaseException as e:
-            if started:
+            lost = isinstance(e, StewardError) and e.code == ErrorCode.DATA_DIR_RECREATED
+            if started and not lost:   # with the data dir gone there are no scan or plan rows to rescan from
                 self._rescan(plan_id)   # a partly finished run changed the disk too
             self._release_run('error', error=f'{type(e).__name__}: {e}',
                               error_code=e.code.value if isinstance(e, StewardError) else None)
@@ -876,9 +918,11 @@ class App:
     def native_tools(self, locale: Optional[str] = None) -> List[Dict[str, Any]]:
         """The report-only groups of the latest scan that hold data, biggest first, with the command that cleans each and
         whether it can run now: {rule_id, group, label, bytes, items, command, runnable, reason, tool, tool_version,
-        targets}. `command` is the text a run must be given back unchanged; `reason` (translated) says why a row cannot
-        run; `targets` lists the models `ollama list` shows ({name, size, bytes, command}) and is None for any other
-        tool. Empty before the first scan."""
+        targets, folders}. `command` is the text a run must be given back unchanged; `reason` (translated) says why a
+        row cannot run; `targets` lists the models `ollama list` shows ({name, size, bytes, command}) and is None for any
+        other tool. `folders` lists, for a tool without a command whose rule offers a manual action, each folder of the
+        group ({item, path, bytes}) that trash_plan() can move to the Trash; None otherwise. Empty before the first
+        scan."""
         if locale is not None and locale not in LOCALES:
             raise StewardError(ErrorCode.INVALID, 'error.invalid_locale', locale=str(locale))
         locale = locale or self.locale
@@ -887,6 +931,8 @@ class App:
             return []
         groups = [g for g in self.store.groups(latest['id']) if not g.actions and g.tier != Tier.PROTECTED and g.alloc > 0]
         states = {g.key: self._native.state(g.rule_id) for g in groups}
+        catalog = self._load_catalog()
+        trash_ok = self.mac.trash_available()
         names = sorted({(st.argv[0] if st.argv else 'ollama') for st in states.values() if st.tool is not None})
         if names:   # a version is a process start each; the first listing asks for all of them at once
             with concurrent.futures.ThreadPoolExecutor(len(names)) as pool:
@@ -903,14 +949,31 @@ class App:
             targets = None
             if g.rule_id == native_mod.OLLAMA and st.targets is not None:
                 targets = [dict(t, command=native_mod.display(native_mod.ollama_argv(t['name']))) for t in st.targets]
+            folders = None
+            reason = st.reason
+            if command is None and Action.TRASH in catalog.rule(g.rule_id).manual_actions:
+                if trash_ok:
+                    folders = [{'item': i.key, 'path': i.path, 'bytes': i.alloc}
+                               for i in self.store.items(latest['id'], group_key=g.key)]
+                    reason = None
+                else:
+                    reason = ('trash_unavailable', {})
             rows.append({
                 'rule_id': g.rule_id, 'group': g.key, 'label': report.group_label(g, locale), 'bytes': g.alloc,
-                'items': g.items, 'command': command, 'runnable': st.runnable,
-                'reason': None if st.reason is None else translate(f'native.reason.{st.reason[0]}', locale, **st.reason[1]),
+                'items': g.items, 'command': command, 'runnable': st.runnable, 'folders': folders,
+                'reason': None if reason is None else translate(f'native.reason.{reason[0]}', locale, **reason[1]),
                 'tool': st.tool, 'tool_version': None if st.tool is None else self._native.version(
                     st.argv[0] if st.argv else 'ollama'), 'targets': targets})
         rows.sort(key=lambda r: (-r['bytes'], r['group']))
         return rows
+
+    def trash_plan(self, item_key: str) -> Dict[str, Any]:
+        """A draft plan that moves one folder of native_tools()' `folders` to the Trash. Nothing moves until the plan
+        runs, with every check a plan gets."""
+        latest = self._latest()
+        plan = planner.create_manual_plan(self.store, latest['id'], item_key, Action.TRASH, self.clock(), self._settings,
+                                          self.mac, catalog=self._load_catalog())
+        return self.plan(plan.id)
 
     def _native_request(self, rule_id: Any, target: Any, command: Any) -> Tuple[Any, native_mod.ToolState,
                                                                                 Tuple[str, ...], str]:

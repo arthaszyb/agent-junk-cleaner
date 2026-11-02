@@ -658,16 +658,14 @@ td.c-changed { white-space: nowrap; }
 .group-title { font: inherit; font-weight: 600; background: none; border: 0; padding: 2px 4px; margin: -2px -4px; color: var(--text); cursor: pointer; text-align: left; border-radius: 6px; }
 .group-title:hover { text-decoration: underline; text-underline-offset: 3px; }
 .c-name .sub, .c-path .sub { display: block; margin-top: 2px; color: var(--text-3); font-size: 12.5px; line-height: 1.4; min-width: 0; }
-.c-name .sub .path-mid, .c-name .sub .path { display: flex; }
+.c-name .sub .path-mid, .c-name .sub .path { display: block; }
 .c-status .sub, .c-count .sub { display: block; margin-top: 2px; color: var(--text-3); font-size: 12.5px; line-height: 1.4; }
 .row-title { font-weight: 600; }
 .target-name { padding-left: 18px; font-weight: 500; }
 .sub.meta-md, .sub.meta-sm { display: none; }
 .tags { display: inline-flex; flex-wrap: wrap; gap: 6px; }
 .c-name .advice { margin: 4px 0 0; font-size: 12.5px; }
-.path-mid { display: flex; min-width: 0; max-width: 100%; }
-.path-mid .head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.path-mid .tail { flex: none; white-space: nowrap; }
+.path-mid { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }   /* the ellipsis goes at the start; the inner dir="ltr" keeps the path in order */
 .dotted { display: inline-flex; align-items: center; gap: 8px; }
 .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); }
 .dot-junk { background: var(--c-junk); }
@@ -680,6 +678,9 @@ td.c-changed { white-space: nowrap; }
 .icon-btn.small { width: 32px; height: 32px; }
 .icon-btn.small[aria-expanded="true"] .icon { transform: rotate(180deg); }
 tbody.group-body.open > tr.group-row > td { border-bottom-color: transparent; }
+/* a group that adds nothing to the selection: the whole row steps back, the sentence under the count says why */
+tbody.group-body.none-qualify > tr.group-row > td, tbody.group-body.none-qualify .group-title, tbody.group-body.none-qualify .c-name .sub { color: var(--text-3); }
+tbody.group-body.none-qualify .group-title { font-weight: 500; }
 tr.detail-row > td { padding: 0; height: auto; }
 tr.detail-row:hover > td { background: transparent; }
 .items-panel { margin: 0; border-top: 0; padding: 4px 16px 16px 56px; }

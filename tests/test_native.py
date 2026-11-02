@@ -41,7 +41,7 @@ def tearDownModule():
 class RegistryTests(unittest.TestCase):
     def test_every_entry_is_exactly_this_argv(self):
         self.assertEqual({k: list(v) for k, v in native.COMMANDS.items()}, EXPECTED)
-        self.assertEqual(native.COPY_ONLY, {'dev.playwright': 'copy_network', 'dev.npx': 'copy_rm'})
+        self.assertEqual(native.COPY_ONLY, {'dev.playwright': 'copy_network'})
         self.assertEqual(native.OLLAMA, 'ollama.models')
         self.assertEqual(native.ollama_argv('llama3:latest'), ('ollama', 'rm', 'llama3:latest'))
 
@@ -142,6 +142,55 @@ class ToolCase(unittest.TestCase):
         return cm.exception
 
 
+class TrashTests(ToolCase):
+    """Move to Trash of one folder of a tool without a command: a draft plan of that folder, run like any plan."""
+
+    def folder(self, rule_id):
+        return self.row(rule_id)['folders'][0]
+
+    def test_the_plan_holds_exactly_the_listed_folder_and_nothing_moves_until_it_runs(self):
+        self.app.scan()
+        folder = self.folder('dev.gradle')
+        plan = self.app.trash_plan(folder['item'])
+        self.assertEqual((plan['state'], plan['totals']['count'], plan['totals']['alloc']), ('draft', 1, folder['bytes']))
+        entries = self.app.entries(plan['id'])['rows']
+        self.assertEqual([(e['path'], e['action'], e['rule_id']) for e in entries], [(folder['path'], 'trash', 'dev.gradle')])
+        self.assertEqual(self.mac.trashed, [])
+        self.fh.clock.advance(seconds=60)   # the folder itself was made at wall-clock time, a moment after the test clock
+        self.app.run_plan(plan['id'], plan['revision'], plan['entries_digest'])
+        self.assertEqual(self.mac.trashed, [str(self.fh.path(folder['path']))])
+        self.assertEqual(self.app.entries(plan['id'])['rows'][0]['state'], 'done')
+
+    def test_a_folder_that_changed_since_the_scan_is_skipped(self):
+        self.app.scan()
+        folder = self.folder('dev.npx')
+        plan = self.app.trash_plan(folder['item'])
+        self.fh.file('~/.npm/_npx/abc/new.js', size=10_000, age_days=0)
+        self.app.run_plan(plan['id'], plan['revision'], plan['entries_digest'])
+        self.assertEqual(self.mac.trashed, [])
+        self.assertEqual(self.app.entries(plan['id'])['rows'][0]['state'], 'skipped')
+
+    def test_only_a_listed_folder_of_a_tool_without_a_command_can_be_planned(self):
+        self.app.scan()
+        items = {i.rule_id: i.key for i in self.app.store.items(self.app.latest_scan()['id'])}
+        for rule_id in ('dev.homebrew', 'dev.playwright', 'ollama.models'):   # these have their own command
+            with self.subTest(rule=rule_id):
+                self.expect(ErrorCode.INVALID, 'error.manual_not_allowed', self.app.trash_plan, items[rule_id])
+        junk = next(k for r, k in items.items() if not r.startswith(('dev.', 'ollama.')))
+        self.expect(ErrorCode.INVALID, 'error.manual_not_allowed', self.app.trash_plan, junk)
+        self.expect(ErrorCode.NOT_FOUND, 'error.NOT_FOUND', self.app.trash_plan, 'no-such-item')
+        self.mac.trash_ok = False
+        self.expect(ErrorCode.UNAVAILABLE, 'error.trash_unavailable', self.app.trash_plan, items['dev.gradle'])
+
+    def test_a_folder_holding_a_credential_is_protected_and_never_listed(self):
+        self.fh.file('~/.gradle/caches/modules-2/credentials.json', size=100, age_days=30)
+        self.app.scan()
+        row = {r['rule_id']: r for r in self.app.native_tools('en')}.get('dev.gradle')
+        self.assertTrue(row is None or not row['folders'])
+        groups = {g.key: g for g in self.app.store.groups(self.app.latest_scan()['id'])}
+        self.assertEqual(groups['dev.gradle#protected'].tier.value, 'protected')
+
+
 class ListingTests(ToolCase):
     def test_nothing_before_the_first_scan(self):
         self.install()
@@ -156,7 +205,7 @@ class ListingTests(ToolCase):
         self.assertEqual([r['bytes'] for r in rows], sorted((r['bytes'] for r in rows), reverse=True))
         for r in rows:
             self.assertEqual(set(r), {'rule_id', 'group', 'label', 'bytes', 'items', 'command', 'runnable', 'reason',
-                                      'tool', 'tool_version', 'targets'})
+                                      'tool', 'tool_version', 'targets', 'folders'})
             self.assertGreater(r['bytes'], 0)
         brew = rows[0]
         self.assertEqual((brew['command'], brew['runnable'], brew['reason'], brew['tool'], brew['tool_version'],
@@ -183,19 +232,31 @@ class ListingTests(ToolCase):
         self.assertEqual(row['reason'], 'brew was not found on your PATH.')
         self.assertEqual(self.row('dev.homebrew', 'zh-CN')['reason'], '在 PATH 中找不到 brew。')
 
-    def test_copy_only_and_no_command_rows(self):
+    def test_a_copy_only_row_shows_its_command_and_why(self):
         self.app.scan()
-        playwright, npx = self.row('dev.playwright'), self.row('dev.npx')
+        playwright = self.row('dev.playwright')
         self.assertEqual(playwright['command'], 'npx playwright uninstall --all')
-        self.assertEqual(npx['command'], 'rm -rf ~/.npm/_npx  # npx re-downloads on demand')   # the hint, as it reads
-        for row in (playwright, npx):
-            self.assertEqual((row['runnable'], row['tool'], row['tool_version'], row['targets']), (False, None, None, None))
+        self.assertEqual((playwright['runnable'], playwright['tool'], playwright['tool_version'], playwright['targets'],
+                          playwright['folders']), (False, None, None, None, None))
         self.assertIn('network', playwright['reason'])
-        self.assertIn('rm -rf', npx['reason'])
-        for rule_id in ('dev.gradle', 'dev.cargo'):                # cargo has a hint, but no official command
-            row = self.row(rule_id)
-            self.assertEqual((row['command'], row['runnable'], row['reason']), (None, False, 'No official cleanup command.'))
-        self.assertEqual(self.row('dev.gradle', 'zh-CN')['reason'], '没有官方清理命令。')
+
+    def test_a_tool_without_a_command_lists_its_folders_for_the_trash_and_no_rm(self):
+        self.app.scan()
+        for rule_id, path in (('dev.npx', '~/.npm/_npx'), ('dev.gradle', '~/.gradle/caches/modules-2'),
+                              ('dev.cargo', '~/.cargo/registry/cache')):
+            with self.subTest(rule=rule_id):
+                row = self.row(rule_id)
+                self.assertEqual((row['command'], row['runnable'], row['reason'], row['targets']), (None, False, None, None))
+                self.assertEqual([f['path'] for f in row['folders']], [path])
+                self.assertEqual(sum(f['bytes'] for f in row['folders']), row['bytes'])
+        self.assertFalse(any('rm -rf' in (r['command'] or '') + (r['reason'] or '') for r in self.app.native_tools('en')))
+
+    def test_without_the_system_trash_the_folders_are_not_offered_and_the_row_says_why(self):
+        self.mac.trash_ok = False
+        self.app.scan()
+        row = self.row('dev.gradle')
+        self.assertEqual((row['folders'], row['reason']), (None, 'Move to Trash needs macOS 15 or later (/usr/bin/trash).'))
+        self.assertEqual(self.row('dev.gradle', 'zh-CN')['reason'], '移到废纸篓需要 macOS 15 或更高版本（/usr/bin/trash）。')
 
     def test_simctl_has_to_work_and_the_reason_says_how_to_fix_it(self):
         self.bin.tool('xcrun', 'if args[:2] == ["simctl", "help"]:\n    sys.exit(1)\nrecord()')
@@ -471,7 +532,7 @@ class RunTests(ToolCase):
         self.expect(ErrorCode.INVALID, 'error.invalid_op', self.app.start_native, 'dev.homebrew', 3, 'x')
 
     def test_a_tool_that_cannot_run_is_refused_with_its_reason(self):
-        for rule_id, fragment in (('dev.playwright', 'network'), ('dev.npx', 'rm -rf'), ('dev.gradle', 'No official'),
+        for rule_id, fragment in (('dev.playwright', 'network'), ('dev.npx', 'No official'), ('dev.gradle', 'No official'),
                                   ('dev.cargo', 'No official')):
             with self.subTest(rule=rule_id):
                 err = self.expect(ErrorCode.UNAVAILABLE, 'error.native_not_runnable', self.app.start_native, rule_id,

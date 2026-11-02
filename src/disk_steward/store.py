@@ -275,8 +275,12 @@ class Store:
         self._conns: List[Tuple[threading.Thread, sqlite3.Connection]] = []
         self._conns_lock = threading.Lock()
         self._closed = False
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.close(os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600))  # sqlite would use the umask
+        # Bumped each time the file is found deleted and made again. A connection opened under an older generation
+        # points at an unlinked inode: it still works, silently, so it must never be used again.
+        self._gen = 0
+        self._heal_lock = threading.RLock()
+        self.on_recreated: Optional[Callable[[], None]] = None   # called after the data dir and file were made again
+        self._ident = self._create_file()
         try:
             self._migrate()
         except BaseException:
@@ -285,12 +289,69 @@ class Store:
 
     # connections ---------------------------------------------------------------------------------
 
+    def _create_file(self) -> Tuple[int, int]:
+        """Make the folder and the empty file if they are missing; (st_dev, st_ino) of the file."""
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.close(os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600))  # sqlite would use the umask
+        st = os.lstat(self.path)
+        return (st.st_dev, st.st_ino)
+
+    def _file_replaced(self) -> bool:
+        """True when the file is gone or is not the one this Store created or adopted (the data dir was deleted,
+        or deleted and made again by another process)."""
+        try:
+            st = os.lstat(self.path)
+        except FileNotFoundError:
+            return True
+        return (st.st_dev, st.st_ino) != self._ident
+
+    def _recreate(self) -> bool:
+        """Make the folder and a fresh database again if the file was replaced. True when this call did it. The
+        calling thread keeps its old connection (if any) and so stays stale: see _conn()."""
+        with self._heal_lock:
+            if not self._file_replaced():
+                return False   # another thread was first
+            mine = self._local
+            stale = (getattr(mine, 'conn', None), getattr(mine, 'gen', None))
+            mine.conn = None   # the migration below needs a connection to the new file
+            self._ident = self._create_file()
+            self._gen += 1
+            try:
+                self._migrate()
+            finally:
+                if stale[0] is not None:
+                    if mine.conn is not None:
+                        mine.conn.close()
+                    mine.conn, mine.gen = stale
+            if self.on_recreated is not None:
+                self.on_recreated()
+            return True
+
+    def check(self) -> bool:
+        """Notice a deleted data dir or database file and make them again; True when this call did. Call it where an
+        operation starts: a connection this thread held to the old file is closed, so the operation begins on the
+        new one. An operation that is already running does not get here, it meets _conn()."""
+        recreated = self._recreate() if self._file_replaced() else False
+        conn = getattr(self._local, 'conn', None)
+        if conn is not None and self._local.gen != self._gen:
+            self._local.conn = None
+            conn.close()
+        return recreated
+
     def _conn(self) -> sqlite3.Connection:
         if self._closed:
             raise RuntimeError('store is closed')
+        if self._file_replaced():
+            self._recreate()
         conn = getattr(self._local, 'conn', None)
         if conn is None:
-            conn = self._local.conn = self._open()
+            with self._heal_lock:   # not while another thread is still migrating a fresh file
+                conn = self._local.conn = self._open()
+                self._local.gen = self._gen
+        elif self._local.gen != self._gen:
+            # A scan or run that was working on the deleted file must stop, not carry on into the new one (its scan
+            # and plan rows are not there). Every call of this thread raises until check() starts it afresh.
+            raise StewardError(ErrorCode.DATA_DIR_RECREATED, 'error.DATA_DIR_RECREATED')
         return conn
 
     def _open(self) -> sqlite3.Connection:

@@ -302,6 +302,70 @@ class ResolutionCacheTests(ServiceCase):
         self.assertEqual((before, after), ('selected', 'domain_off'))
 
 
+class QualifyTests(ServiceCase):
+    """The per-group figures Browse shows next to the selection summary (claude.logs: 5 days old, rule floor 1 day)."""
+
+    PROJ = 'claude.projects:~/.claude/projects/-Users-me-proj'    # three 20-day-old review items
+
+    def setUp(self):
+        super().setUp()
+        self.app.scan()
+
+    def test_only_the_selection_calls_carry_the_figures(self):
+        self.assertNotIn('qualify', self.app.selection())
+        self.assertNotIn('qualify', self.app.apply_ops([]))
+        sel = self.app.selection(qualify=True)
+        self.assertEqual(sel['qualify'], self.app.apply_ops([], qualify=True)['qualify'])
+        keys = {g['key'] for g in self.app.groups() if g['tier'] != 'protected' and g['actions']}
+        self.assertEqual(set(sel['qualify']), keys)
+
+    def test_ticked_rows_add_up_to_the_summary(self):
+        out = self.app.apply_ops(JUNK_ALL[:1] + [{'op': 'select_group', 'group': self.PROJ, 'on': True},
+                                                  {'op': 'set_filter', 'min_age_days': 3},
+                                                  {'op': 'toggle_item', 'item': item_key(LOG), 'on': False}], qualify=True)
+        ticked = [k for k in out['qualify'] if k in out['spec']['groups']]
+        self.assertTrue(ticked)
+        self.assertEqual(sum(out['qualify'][k]['items'] for k in ticked), out['summary']['count'])
+        self.assertEqual(sum(out['qualify'][k]['alloc'] for k in ticked), out['summary']['alloc'])
+        self.assertEqual(out['qualify']['claude.logs']['excluded'], 1)
+        for k in ticked:   # what a ticked row shows is what the summary holds for that group
+            self.assertEqual((out['qualify'][k]['items'], out['qualify'][k]['alloc']),
+                             (out['summary']['groups'][k]['selected'], out['summary']['groups'][k]['alloc']))
+
+    def test_an_unticked_group_shows_what_it_would_select(self):
+        before = self.app.apply_ops([{'op': 'clear'}, {'op': 'set_filter', 'min_age_days': 14}], qualify=True)
+        self.assertEqual(before['summary']['count'], 0)
+        would = before['qualify'][self.PROJ]
+        self.assertEqual((would['items'], would['total']), (3, 3))
+        after = self.app.apply_ops([{'op': 'select_group', 'group': self.PROJ, 'on': True}], qualify=True)
+        self.assertEqual(after['qualify'][self.PROJ], would)
+        self.assertEqual((after['summary']['count'], after['summary']['alloc']), (would['items'], would['alloc']))
+
+    def test_a_group_of_only_too_recent_items_says_zero_and_why(self):
+        out = self.app.apply_ops([{'op': 'clear'}, {'op': 'set_filter', 'min_age_days': 14}], qualify=True)
+        logs = out['qualify']['claude.logs']
+        self.assertEqual((logs['items'], logs['alloc'], logs['total'], logs['too_recent']), (0, 0, 1, 1))
+        self.assertEqual((logs['min_age_days'], logs['floor_days']), (14, 1))
+        out = self.app.apply_ops([{'op': 'set_filter', 'min_age_days': 3}], qualify=True)
+        self.assertEqual((out['qualify']['claude.logs']['items'], out['qualify']['claude.logs']['too_recent']), (1, 0))
+
+    def test_the_figures_are_resolved_once_per_selection(self):
+        with mock.patch('disk_steward.service.qualify_groups', side_effect=selection.qualify_groups) as m:
+            self.app.apply_ops([{'op': 'select_group', 'group': 'codex.logs', 'on': True}], qualify=True)
+            self.app.selection(qualify=True)
+            self.app.selection(qualify=True)
+            self.assertEqual(m.call_count, 1)
+            self.app.apply_ops([{'op': 'select_group', 'group': 'codex.logs', 'on': False}], qualify=True)
+            self.assertEqual(m.call_count, 2)
+
+    def test_changed_settings_recompute_them(self):
+        self.app.apply_ops([{'op': 'clear'}, {'op': 'set_filter', 'min_age_days': 0}])
+        self.assertEqual(self.app.selection(qualify=True)['qualify']['codex.logs']['items'], 1)
+        self.app.update_settings({'domains': ['app-library']})
+        logs = self.app.selection(qualify=True)['qualify']['codex.logs']
+        self.assertEqual((logs['items'], logs['other']), (0, 1))
+
+
 class SpecMigrationTests(ServiceCase):
     def test_a_rescan_carries_the_selection_over(self):
         first = self.app.scan()

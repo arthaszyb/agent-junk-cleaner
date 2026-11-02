@@ -37,7 +37,7 @@ People whose Mac fills up from Codex, Claude Code, Claude Desktop, Cursor and si
 ## What it never does
 
 - It makes no network calls of its own. There is no telemetry, no update check and no account. The portal talks to your browser over `127.0.0.1` only. Two optional features start programs that you control: the AI advisor (off by default) runs your own `codex` or `claude` CLI under its existing login, and the Run buttons for report-only tools run your own `brew`, `pip`, `ollama` and similar after you confirm the exact command.
-- It deletes nothing without a cleanup list that you reviewed and started. The one other kind of removal is a report-only tool's own cleanup command from a Run button, and you see its exact text first.
+- It deletes nothing without a cleanup list that you reviewed and started. The one other kind of removal is a report-only tool's own cleanup command from a Run button, and you see its exact text first. A tool without such a command offers Move to Trash for each of its folders, which makes a cleanup list of that one folder.
 - It offers only what a rule in the audited catalog recognises. Anything unknown is protected, and so are credentials, databases and git work trees in every area.
 - It runs as you, with no `sudo` and no admin rights.
 
@@ -175,7 +175,7 @@ Other commands: `insights` (environment, history and follow-ups; `--window DAYS`
 | `agent` | on | Codex, Claude, Cursor, Windsurf, Antigravity, Ollama |
 | `app-library` | on | `~/Library/Caches`, `~/Library/Logs`, Electron caches, VS Code, browser caches, leftovers, `$TMPDIR` |
 | `user-files` | off | Installers, idle project dependency folders, large and idle files in `~/Downloads`, `~/Desktop`, `~/Documents`, `~/Movies` (the `user_roots` setting) |
-| `dev-shared` | off | Homebrew, npm, pip, Cargo, Go, Gradle, Xcode and similar stores. Report only: the group shows its size and the native command that cleans it |
+| `dev-shared` | off | Homebrew, npm, pip, Cargo, Go, Gradle, Xcode and similar stores. Report only: the group shows its size and the native command that cleans it, or Move to Trash per folder for a tool without one |
 
 A few `dev-shared` groups also appear with the default areas, because their folders sit under `~/Library/Caches`. They stay report only.
 
@@ -260,7 +260,7 @@ rm -r "$HOME/Library/Application Support/Disk Steward"
 - Items moved to the Trash have no restore in Disk Steward. Use Finder's Put Back. The space comes back only when you empty the Trash.
 - Spotlight's last-used date changes only when LaunchServices opens a file (Finder, `open`). A file used from a terminal or a script can look idle. This affects installers, large files and idle files, which are review items that default to Trash.
 - APFS clones and local snapshots can keep removed space allocated, so the space freed can be smaller than the estimate. The run summary shows the estimate, the measured change and the number of local snapshots. Archive estimates assume 70 percent of the size comes back.
-- Shared developer caches are report only. Run the native command the group shows.
+- Shared developer caches are never part of a selection. Run the tool's own command from the portal, or move a listed folder to the Trash when the tool has none.
 - Browser caches are offered per profile, only while the browser is quit and the newest file in that cache is older than the filter.
 - A writer that opens, appends and closes a file is invisible to `lsof`. That is why session and log rules have a one-day floor.
 - The portal speaks plain HTTP on the loopback address. Other users on the same Mac cannot sign in without a launch link, but a process running as you can read the data directory.
@@ -316,7 +316,7 @@ disk-steward scan                # 命令行：scan, report, list, plan, show, a
 安全模型：
 
 - 只有目录里有规则、且你明确选中的东西才会被清理。规则分三层：junk（可重建，可批量选）、review（需要你判断，按组或按文件选）、protected（凭据、数据库、git 工作区、设置、你自己的内容，永远不可选）。
-- `agent` 和 `app-library` 默认开启；`user-files` 需要手动开启；`dev-shared` 只报告，给出各工具自带的清理命令。
+- `agent` 和 `app-library` 默认开启；`user-files` 需要手动开启；`dev-shared` 不进入选择，给出各工具自带的清理命令；没有官方命令的工具可以把列出的文件夹移到废纸篓。
 - 年龄过滤默认 14 天。规则自带最低年龄（例如日志和会话文件 1 天），过滤设置和“Include anyway”都不能低于它。
 - 门户的概览顶部显示“可安全清理 X”（默认至少 14 天未变动的可重建垃圾，天数可直接改）。点“查看并清理 X”进入数字相同的清理清单，可按分组或单项取消，开始按钮始终显示剩余数量与大小；清理结果就在同一页显示。概览上的每个数字都能点进“浏览”，看到的正是该数字对应的项目。
 - 仅展示的工具（Homebrew、pip、uv、npm、Ollama 模型等）若有官方清理命令，会出现“运行”按钮：先显示并确认完整命令，由工具自己清理，前后测量释放的空间；命令行用 `disk-steward tools run RULE_ID`。
@@ -329,6 +329,6 @@ AI 顾问默认关闭，调用本机已登录的 `codex` 或 `claude` CLI，不�
 
 数据保存在 `~/Library/Application Support/Disk Steward`（可用 `--data-dir` 或 `DISK_STEWARD_DATA_DIR` 修改），其中包含归档。`disk-steward schedule install` 安装每周一次的只扫描、只通知的 LaunchAgent。卸载：如果装过每周扫描，先运行 `disk-steward schedule remove`（否则 `install.sh --uninstall` 会拒绝执行）；再运行 `sh install.sh --uninstall`（或 `pip uninstall disk-steward`）；最后删除数据目录（先恢复需要的归档）。
 
-已知限制：废纸篓无软件内恢复；Spotlight 的“上次使用”只在 LaunchServices 打开文件时更新；APFS 克隆和本地快照会让实际释放空间小于估算；开发者共享缓存只报告；浏览器缓存仅在浏览器退出且缓存早于过滤期时才会被提供；未在其他 macOS 版本上验证。
+已知限制：废纸篓无软件内恢复；Spotlight 的“上次使用”只在 LaunchServices 打开文件时更新；APFS 克隆和本地快照会让实际释放空间小于估算；开发者共享缓存不进入选择，只能运行工具自带命令或把列出的文件夹移到废纸篓；浏览器缓存仅在浏览器退出且缓存早于过滤期时才会被提供；未在其他 macOS 版本上验证。
 
 支持：问题和 bug 提到 https://github.com/arthaszyb/agent-junk-cleaner/issues 。请附上 `disk-steward doctor` 的输出。如果清理误删了东西，先停止清理，保持数据目录原样，提交 issue，并引用 `~/Library/Application Support/Disk Steward/audit/` 审计日志中相关的行，它记录了每个被删除的路径。issue 是公开的，不要贴文件内容。安全问题见 [SECURITY.md](SECURITY.md)。

@@ -395,9 +395,8 @@ Scan roots: `~/.cache/pip`, `~/.cache/puppeteer`, `~/.cache/uv`, `~/.cargo/regis
 
 ### Rules in detail
 
-- `dev.cargo`: Cargo registry. Crate archives and sources Cargo downloaded. Disk Steward only reports the size; run the command shown. Cargo downloads crates again when a build needs them.
+- `dev.cargo`: Cargo registry. Crate archives and sources Cargo downloaded. Disk Steward can move a listed folder to the Trash for you. Cargo downloads crates again when a build needs them.
   Matches `~/.cargo/registry/*`.
-  Hint shown to the user: `cargo cache --autoclean  # needs cargo-cache`
 - `dev.colima`: Colima virtual machine. The Colima VM, including its disk image with your containers, images and volumes. Disk Steward only reports the size; the command shown removes caches only. Deleting the VM loses local containers and volumes.
   Matches `~/.colima/*`.
   Hint shown to the user: `colima prune`
@@ -410,21 +409,20 @@ Scan roots: `~/.cache/pip`, `~/.cache/puppeteer`, `~/.cache/uv`, `~/.cargo/regis
 - `dev.go-mod`: Go module cache. Downloaded Go modules and their sources. Disk Steward only reports the size; run the command shown. Go downloads modules again on the next build.
   Matches `~/go/pkg/mod/*`.
   Hint shown to the user: `go clean -modcache`
-- `dev.gradle`: Gradle caches. Downloaded dependencies and build caches of Gradle. Disk Steward only reports the size. Gradle downloads or rebuilds them on the next build.
+- `dev.gradle`: Gradle caches. Downloaded dependencies and build caches of Gradle. Disk Steward can move a listed folder to the Trash for you. Gradle downloads or rebuilds them on the next build.
   Matches `~/.gradle/caches/*`.
 - `dev.homebrew`: Homebrew downloads. Bottles and source archives Homebrew downloaded. Disk Steward only reports the size; run the command shown. Homebrew downloads a package again when you reinstall it.
   Matches `~/Library/Caches/Homebrew`.
   Hint shown to the user: `brew cleanup --prune=all`
-- `dev.maven`: Maven local repository. Artifacts Maven downloaded, and artifacts you put there with mvn install. The ones you built yourself cannot be downloaded again. Disk Steward only reports the size.
+- `dev.maven`: Maven local repository. Artifacts Maven downloaded, and artifacts you put there with mvn install. The ones you built yourself cannot be downloaded again. Disk Steward can move a listed folder to the Trash for you.
   Matches `~/.m2/repository/*`.
-- `dev.node-gyp`: node-gyp headers. Node.js headers node-gyp downloads to compile native add-ons. Disk Steward only reports the size. node-gyp downloads them again when needed.
+- `dev.node-gyp`: node-gyp headers. Node.js headers node-gyp downloads to compile native add-ons. Disk Steward can move a listed folder to the Trash for you. node-gyp downloads them again when needed.
   Matches `~/Library/Caches/node-gyp`.
 - `dev.npm`: npm package cache. Packages npm downloaded. Disk Steward only reports the size; run the command shown. npm downloads them again on the next install.
   Matches `~/.npm/_cacache`.
   Hint shown to the user: `npm cache clean --force`
-- `dev.npx`: npx cache. Packages npx downloaded to run commands. Disk Steward only reports the size; run the command shown. npx downloads a package again when you run it.
+- `dev.npx`: npx cache. Packages npx downloaded to run commands. Disk Steward can move a listed folder to the Trash for you. npx downloads a package again when you run it.
   Matches `~/.npm/_npx`.
-  Hint shown to the user: `rm -rf ~/.npm/_npx  # npx re-downloads on demand`
 - `dev.pip`: pip cache. Wheels and source archives pip downloaded. Disk Steward only reports the size; run the command shown. pip downloads them again on the next install.
   Matches `~/.cache/pip/*`, `~/Library/Caches/pip`.
   Hint shown to the user: `pip cache purge`
@@ -434,16 +432,16 @@ Scan roots: `~/.cache/pip`, `~/.cache/puppeteer`, `~/.cache/uv`, `~/.cargo/regis
 - `dev.pnpm`: pnpm store. The package store pnpm shares between projects. Disk Steward only reports the size; the command shown removes only packages no project links to.
   Matches `~/Library/pnpm/store`, `~/.pnpm-store/*`, `~/Library/Caches/pnpm`.
   Hint shown to the user: `pnpm store prune`
-- `dev.puccinialin`: puccinialin Rust toolchain. Rust toolchain files that Python build tools download on demand to compile Rust extensions. Disk Steward only reports the size. They are downloaded again when a build needs them.
+- `dev.puccinialin`: puccinialin Rust toolchain. Rust toolchain files that Python build tools download on demand to compile Rust extensions. Disk Steward can move a listed folder to the Trash for you. They are downloaded again when a build needs them.
   Matches `~/Library/Caches/puccinialin`.
-- `dev.puppeteer`: Puppeteer browsers. Browser builds Puppeteer downloaded. Disk Steward only reports the size. Puppeteer downloads them again when a script needs them.
+- `dev.puppeteer`: Puppeteer browsers. Browser builds Puppeteer downloaded. Disk Steward can move a listed folder to the Trash for you. Puppeteer downloads them again when a script needs them.
   Matches `~/.cache/puppeteer/*`.
 - `dev.uv`: uv cache. Wheels and source archives that uv shares between projects. Disk Steward only reports the size; run the command shown. uv downloads or builds them again when a project needs them.
   Matches `~/.cache/uv/*`.
   Hint shown to the user: `uv cache prune`
-- `dev.xcode-derived-data`: Xcode DerivedData. Build products and indexes of your Xcode projects. Disk Steward only reports the size. Xcode rebuilds them, and the next build is slower. Quit Xcode before removing them.
+- `dev.xcode-derived-data`: Xcode DerivedData. Build products and indexes of your Xcode projects. Disk Steward can move a listed folder to the Trash for you. Xcode rebuilds them, and the next build is slower. Quit Xcode before removing them.
   Matches `~/Library/Developer/Xcode/DerivedData`.
-- `dev.xcode-device-support`: Xcode iOS DeviceSupport. Debug symbols Xcode copied from the iPhones and iPads you connected. Disk Steward only reports the size. Xcode copies them again the next time you connect that device version.
+- `dev.xcode-device-support`: Xcode iOS DeviceSupport. Debug symbols Xcode copied from the iPhones and iPads you connected. Disk Steward can move a listed folder to the Trash for you. Xcode copies them again the next time you connect that device version.
   Matches `~/Library/Developer/Xcode/iOS DeviceSupport`.
 - `dev.yarn`: Yarn cache. Packages Yarn downloaded. Disk Steward only reports the size; run the command shown. Yarn downloads them again on the next install.
   Matches `~/Library/Caches/Yarn`.

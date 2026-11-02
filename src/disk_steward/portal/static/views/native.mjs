@@ -1,5 +1,6 @@
 // Tools that manage their own space (the report-only groups): what each holds, the command that cleans it, and a button
-// that runs exactly that command with its output live. A tool that cannot run says why and offers the command to copy.
+// that runs exactly that command with its output live. A tool without a command lists its folders, each with a Move to
+// Trash that opens a cleanup list of that one folder; nothing here asks the user to delete by hand.
 import { api, ApiError } from '../api.mjs';
 import { delegate, h, replace } from '../dom.mjs';
 import { fmtBytes } from '../format.mjs';
@@ -60,7 +61,7 @@ export function create() {
         'data-testid': target ? 'native-delete-model' : 'native-run' },
       icon(target ? 'trash' : 'play', 14), t(target ? 'portal.native.delete_model' : 'portal.native.run'));
     }
-    if (tool.targets) return null;   // the models carry the buttons
+    if (tool.targets || tool.folders) return null;   // the models or the folders carry the buttons
     return h('div', { class: 'row-actions' }, tool.reason ? h('span', { class: 'sub reason', 'data-testid': 'native-reason', text: tool.reason }) : null,
       cmd ? copyButton(cmd) : null);
   }
@@ -82,6 +83,15 @@ export function create() {
         h('td', { class: 'c-size num hide-sm', text: sizeOf(target) }),
         h('td', { class: 'c-cmd hide-sm' }, command(target.command)),
         h('td', { class: 'c-action' }, actionCell(tool, target))));
+    }
+    for (const folder of tool.folders || []) {
+      rows.push(h('tr', { class: 'native-row native-target', 'data-testid': 'native-folder', 'data-rule': tool.rule_id, 'data-item': folder.item },
+        h('td', { class: 'c-name' }, h('span', { class: 'row-title target-name path', text: folder.path }),
+          h('span', { class: 'sub meta-sm', text: fmtBytes(folder.bytes) })),
+        h('td', { class: 'c-size num hide-sm', text: fmtBytes(folder.bytes) }),
+        h('td', { class: 'c-cmd hide-sm' }),
+        h('td', { class: 'c-action' }, h('button', { class: 'btn small', disabled: running(), data: { action: 'trash', item: folder.item },
+          'data-testid': 'native-trash' }, icon('trash', 14), t('portal.native.trash')))));
     }
     const job = state.job;
     if (running() && tools.some((x) => x.rule_id === job.rule_id) && job.rule_id === tool.rule_id) {
@@ -166,8 +176,15 @@ export function create() {
     render();
   }
 
+  // A draft list of that one folder: the plan page shows it and runs it with every check a cleanup gets.
+  async function trash(el) {
+    const plan = await api.post('/api/native/trash', { item: el.dataset.item });
+    location.hash = `#/plan/${plan.id}`;
+  }
+
   const handlers = {
     run,
+    trash,
     cancel: async () => { setJobFromResponse((await api.post('/api/job/cancel', {})).job); },
     dismiss: () => { result = null; render(); },
     sort: (el) => { sort = nextSort(sort, el.dataset.col, el.dataset.col === 'size' ? 'desc' : 'asc'); render(); },

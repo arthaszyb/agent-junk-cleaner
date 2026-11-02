@@ -207,6 +207,7 @@ async function newPage(context, label) {
 const tid = (page, id) => page.locator(`[data-testid="${id}"]`);
 const groupCard = (page, key) => page.locator(`[data-testid="group"][data-key="${key}"]`);
 const itemRow = (page, p) => page.locator(`[data-testid="item"][data-path="${p}"]`);
+const copyTexts = (page) => page.locator('[data-copy]').evaluateAll((els) => els.map((e) => e.dataset.copy));   // what the copy buttons put on the clipboard
 const entryRow = (page, p) => page.locator(`[data-testid="entry"][data-path="${p}"]`);
 
 async function api(page, method, url, body) {
@@ -359,12 +360,28 @@ try {
     const ov = (await api(page, 'GET', '/api/overview')).body;
     const header = (text) => page.waitForFunction((want) => document.querySelector('[data-testid="browse-header"]')?.textContent === want, text, { timeout: 15000 });
     const line = async (title, b) => `${title} · ${await count(b.items)} items · ${await fmt(b.alloc)}`;
+    // a tier link counts what qualifies in the groups it lists (the rows' own figures, which are the server's), then what they hold
+    const qheader = async (title, all) => {
+      await page.waitForFunction(() => document.querySelector('[data-testid="header-all"]'), null, { timeout: 15000 });
+      const rows = await page.locator('[data-testid="group"]').evaluateAll((els) => els.map((e) => ({ key: e.dataset.key, items: Number(e.dataset.qualifyItems), alloc: Number(e.dataset.qualifyAlloc) })));
+      const qualify = (await api(page, 'GET', '/api/spec')).body.qualify;
+      let n = 0;
+      let size = 0;
+      for (const r of rows) {
+        if (!qualify[r.key]) continue;
+        eq([r.items, r.alloc].join(), [qualify[r.key].items, qualify[r.key].alloc].join(), `${r.key}: the row carries the server's qualifying figures`);
+        n += r.items;
+        size += r.alloc;
+      }
+      eq(await tid(page, 'header-qualify').innerText(), `${title} · ${await count(n)} ${n === 1 ? 'item qualifies' : 'items qualify'} · ${await fmt(size)}`, 'the header counts what qualifies in the listed groups');
+      eq(await tid(page, 'header-all').innerText(), `of ${await count(all.items)} ${all.items === 1 ? 'item' : 'items'} · ${await fmt(all.alloc)} in these groups`, 'and says what they hold');
+    };
     const back = async (tab = 'space') => { await go(page, A.base, `overview?tab=${tab}`); await tid(page, 'hero').waitFor(); };
     // a tier card
     const junk = ov.totals.by_tier.junk;
     await tid(page, 'tier-junk').click();
     await page.waitForURL(/#\/browse\?tier=junk/);
-    await header(await line('Junk', junk));
+    await qheader('Junk', junk);
     eq(await page.locator('[data-testid="group"]').count(), junk.groups, 'the tier card\'s groups are listed');
     // a row of "where the space goes"
     await back('why');
@@ -383,7 +400,7 @@ try {
     // the review tier and a protected reason
     await back('why');
     await tid(page, 'row-review').getByRole('link').first().click();
-    await header(await line('Needs your decision', ov.not_included.review));
+    await qheader('Needs your decision', ov.not_included.review);
     await back('why');
     await tid(page, 'row-reason-databases').getByRole('link').first().click();
     await page.waitForURL(/reason=databases/);
@@ -425,7 +442,8 @@ try {
     ok((await recent.innerText()).includes('Too recent'), 'the badge says Too recent');
     ok((await recent.innerText()).includes('newer than the 14-day threshold'), "the server's reason text is shown");
     ok((await recent.getByRole('button', { name: 'Include anyway' }).count()) === 1, 'Include anyway is offered');
-    ok((await card.innerText()).includes('4 of 5 qualify'), 'the group shows "N of M qualify"');
+    eq(await card.getByTestId('group-qualify').innerText(), '4 items', 'the group shows how many items qualify');
+    ok((await card.getByTestId('group-of-total').innerText()).includes('of 5 items'), 'and out of how many');
     const folded = tid(page, 'none-qualify');
     ok(/^\d+ selected groups have nothing that qualifies right now$/.test(await folded.locator('summary').innerText()), 'one line for the groups with nothing to offer');
     ok(!(await folded.locator('li').first().isVisible()), 'the list behind it is folded');
@@ -439,6 +457,18 @@ try {
     const text = await tid(page, 'summary-count').innerText();
     eq(text, `${spec.summary.count} items selected · ${await fmtBytes(page, spec.summary.alloc)}`, 'summary text equals the server summary');
     eq(spec.summary.count, 12, 'twelve entries qualify in the fixture');
+    // a group that adds nothing says why in words (no warning badge), and only such a group is marked
+    const zero = Object.entries(spec.qualify).filter(([, q]) => q.items === 0 && q.total > 0);
+    ok(zero.length >= 1, 'the fixture has a group that adds nothing');
+    const marked = await page.locator('tbody.none-qualify').evaluateAll((els) => els.map((e) => e.dataset.key).sort());
+    eq(marked.join('|'), zero.map(([k]) => k).sort().join('|'), 'exactly the groups with nothing that qualifies are marked');
+    for (const [key, q] of zero) {
+      const why = (await groupCard(page, key).getByTestId('group-why').innerText()).trim();
+      ok(why.length > 10, `${key}: the reason is a sentence: ${why}`);
+      if (q.too_recent === q.total) ok(why.includes(`newer than ${q.min_age_days} days`), `${key}: it names the age that holds everything back: ${why}`);
+      eq(await groupCard(page, key).getAttribute('data-qualify-items'), '0', `${key}: its main figure is 0`);
+    }
+    eq(await page.locator('.badge', { hasText: 'Nothing qualifies' }).count(), 0, 'and no "Nothing qualifies" warning badge');
     ok((await tid(page, 'action-delete').innerText()).startsWith('Delete 12:'), 'per-action line');
     await itemRow(page, '~/Library/Logs/Acme/recent.log').getByRole('button', { name: 'Include anyway' }).click();
     await page.waitForFunction(() => document.querySelector('[data-testid="summary-count"]').textContent.startsWith('13 items'));
@@ -448,6 +478,28 @@ try {
     await itemRow(page, '~/Library/Logs/Acme/recent.log').locator('input[type=checkbox]').click();
     await page.waitForFunction(() => document.querySelector('[data-testid="summary-count"]').textContent.startsWith('12 items'));
     eq((await api(page, 'GET', '/api/spec')).body.summary.count, 12, 'back to twelve');
+    // the ticked groups' own figures add up to the Selection panel's, as groups are ticked and unticked
+    const ticked = () => page.locator('[data-testid="group"][data-ticked="1"]').evaluateAll((els) => ({ items: els.reduce((n, e) => n + Number(e.dataset.qualifyItems), 0), alloc: els.reduce((n, e) => n + Number(e.dataset.qualifyAlloc), 0) }));
+    const agrees = async (what) => {
+      const sum = await ticked();
+      eq(await tid(page, 'summary-count').innerText(), `${sum.items} ${sum.items === 1 ? 'item' : 'items'} selected · ${await fmt(sum.alloc)}`, `${what}: the ticked groups add up to the panel`);
+    };
+    await agrees('to start with');
+    const offered = await page.locator('[data-testid="group"][data-ticked="0"]').evaluateAll((els) => els.filter((e) => Number(e.dataset.qualifyItems) > 0 && e.querySelector('input[type=checkbox]')).slice(0, 2).map((e) => e.dataset.key));
+    ok(offered.length === 2, `two groups that can be ticked and add something: ${offered.join(', ')}`);
+    for (const key of offered) {
+      const was = await tid(page, 'summary-count').innerText();
+      await groupCard(page, key).locator('.group-head input[type=checkbox], tr.group-row input[type=checkbox]').first().check();
+      await page.waitForFunction((w) => document.querySelector('[data-testid="summary-count"]').textContent !== w, was, { timeout: 15000 });
+      await agrees(`${key} ticked`);
+    }
+    for (const key of offered) {
+      const was = await tid(page, 'summary-count').innerText();
+      await groupCard(page, key).locator('tr.group-row input[type=checkbox]').first().uncheck();
+      await page.waitForFunction((w) => document.querySelector('[data-testid="summary-count"]').textContent !== w, was, { timeout: 15000 });
+      await agrees(`${key} unticked`);
+    }
+    eq((await api(page, 'GET', '/api/spec')).body.summary.count, 12, 'and the selection is the original twelve again');
   });
 
   await step('browse: a plan from a stale view is refused with the new summary to confirm', async () => {
@@ -1733,12 +1785,23 @@ try {
     await tid(pc, 'sort-groups-size').click();
     eq(await tid(pc, 'sort-groups-size').locator('xpath=..').getAttribute('aria-sort'), 'descending', 'the first click sorts the biggest first');
     const bySize = await keys();
-    const alloc = Object.fromEntries(all.map((g) => [g.key, g.alloc]));
+    // a group's figures are what qualifies in it (the server's `qualify`), else everything it holds
+    const spec = (await api(pc, 'GET', '/api/spec')).body;
+    const alloc = Object.fromEntries(all.map((g) => [g.key, spec.qualify[g.key] ? spec.qualify[g.key].alloc : g.alloc]));
+    const counts = Object.fromEntries(all.map((g) => [g.key, spec.qualify[g.key] ? spec.qualify[g.key].items : g.items]));
+    for (const row of await table.locator('tbody.group-body').evaluateAll((els) => els.map((e) => ({ key: e.dataset.key, alloc: Number(e.dataset.qualifyAlloc), items: Number(e.dataset.qualifyItems), size: e.querySelector('td.c-size').textContent })))) {
+      eq([row.alloc, row.items].join(), [alloc[row.key], counts[row.key]].join(), `${row.key}: the row carries its qualifying figures`);
+      eq(row.size, await fmtC(row.alloc), `${row.key}: and its Size column shows them`);
+    }
     ok(bySize.every((k, i) => i === 0 || alloc[bySize[i - 1]] >= alloc[k]), 'in that order');
     await tid(pc, 'sort-groups-size').click();
     eq(await tid(pc, 'sort-groups-size').locator('xpath=..').getAttribute('aria-sort'), 'ascending', 'the second one reverses it');
     const reversed = await keys();
     ok(reversed.every((k, i) => i === 0 || alloc[reversed[i - 1]] <= alloc[k]), 'in that order');
+    await tid(pc, 'sort-groups-count').click();
+    const dir = await tid(pc, 'sort-groups-count').locator('xpath=..').getAttribute('aria-sort');
+    const byCount = await keys();
+    ok(byCount.every((k, i) => i === 0 || (dir === 'ascending' ? counts[byCount[i - 1]] <= counts[k] : counts[byCount[i - 1]] >= counts[k])), `the count column sorts by what qualifies (${dir})`);
     await tid(pc, 'sort-groups-name').click();
     const label = Object.fromEntries(all.map((g) => [g.key, g.label.toLowerCase()]));
     const byName = await keys();
@@ -1759,7 +1822,11 @@ try {
     ok((await itemRows.count()) >= 1, 'with a row per item');
     const row = itemRows.first();
     eq(await row.locator('.path-mid').getAttribute('title'), await row.getAttribute('data-path'), 'the whole path is the tooltip of a shortened one');
-    ok((await row.getAttribute('data-path')).endsWith(await row.locator('.path-mid .tail').innerText()), 'and the end of the path is what stays visible');
+    eq(await row.locator('.path-mid > span').innerText(), await row.getAttribute('data-path'), 'the path is one piece of text: the whole of it');
+    // copying it is one line: the old two-box path was copied as "~/Library⏎/Caches/x"
+    const copied = await row.locator('.path-mid').evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); const text = sel.toString(); sel.removeAllRanges(); return text; });
+    eq(copied, await row.getAttribute('data-path'), 'selecting it gives exactly the path');
+    ok(!copied.includes('\n'), 'on one line');
     ok((await row.locator('td.c-status .dot').count()) === 1 && (await row.locator('td.c-status').innerText()).trim().length > 3, 'the state is a dot and a word');
     ok(await row.locator('td.c-size').evaluate((e) => getComputedStyle(e).textAlign === 'right'), 'sizes are right-aligned here too');
     eq(await tid(pc, 'sort-items-size').locator('xpath=..').getAttribute('aria-sort'), 'descending', 'items start biggest first');
@@ -1773,6 +1840,11 @@ try {
     ok(await table.locator('tbody tr.group-row').first().locator('.meta-sm').first().isVisible(), 'and its figures reappear under the name');
     ok((await table.locator('tbody tr.group-row').first().locator('.meta-sm').first().innerText()).includes('KiB'), 'with the size');
     ok(await pc.locator('table[data-testid="items"] tr[data-testid="item"]').first().locator('.status-sm').isVisible(), 'an item keeps its state under its path');
+    // a path that does not fit gives way at its start: its last characters are what shows
+    const cut = await pc.locator('table[data-testid="items"] .path-mid').evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth + 1)
+      .map((e) => ({ text: e.textContent, gap: e.getBoundingClientRect().right - e.firstElementChild.getBoundingClientRect().right })));
+    ok(cut.length >= 1, 'at 390px some path is too long for its cell');
+    ok(cut.every((c) => Math.abs(c.gap) <= 1), `and its end is flush with the cell's right edge: ${JSON.stringify(cut.slice(0, 2))}`);
     ok((await pc.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)) <= 1, 'no sideways scrolling at 390px');
     await pc.setViewportSize({ width: 1280, height: 860 });
   });
@@ -2106,7 +2178,8 @@ try {
     await tid(pc, 'group').first().waitFor();
     eq(await tid(pc, 'group').count(), 50, 'fifty rows, not all of them');
     const header = await tid(pc, 'browse-header').innerText();
-    ok(header.includes(`${scope.items.toLocaleString('en-US')} items`) && header.includes(await fmtC(scope.alloc)), `the header counts the whole scan: ${header}`);
+    const all2 = await tid(pc, 'header-all').innerText();
+    ok(all2.includes(`${scope.items.toLocaleString('en-US')} items`) && all2.includes(await fmtC(scope.alloc)), `the header still says what the whole scan holds: ${header}`);
     eq((await tid(pc, 'groups-pager').locator('.muted').innerText()).trim(), `Showing 50 of ${all.length}`, 'the pager says how many there are');
     eq((await tid(pc, 'more-groups').innerText()).trim(), `Show more (${all.length - 50} more groups)`, 'and how many more a click brings');
     await tid(pc, 'more-groups').click();
@@ -2128,12 +2201,13 @@ try {
     eq(labels[shown[0]], labels[byLabel[0]], 'and the first one is the first of ALL the groups, not of the first page');
     eq(labels[shown[49]], labels[byLabel[49]], 'as is the fiftieth');
     await tid(pc, 'sort-groups-size').click();
-    const sizes = Object.fromEntries(all.map((g) => [g.key, g.alloc]));
+    const qualify = (await api(pc, 'GET', '/api/spec')).body.qualify;   // the figure of a group is what qualifies in it, else all it holds
+    const sizes = Object.fromEntries(all.map((g) => [g.key, qualify[g.key] ? qualify[g.key].alloc : g.alloc]));
     const bySize = await keys();
-    eq(sizes[bySize[0]], Math.max(...all.map((g) => g.alloc)), 'by size, the first row is the biggest group of the whole scan');
+    eq(sizes[bySize[0]], Math.max(...Object.values(sizes)), 'by size, the first row is the biggest group of the whole scan');
     ok(bySize.every((k, i) => i === 0 || sizes[bySize[i - 1]] >= sizes[k]), 'biggest first');
     await tid(pc, 'sort-groups-size').click();
-    eq(sizes[(await keys())[0]], Math.min(...all.map((g) => g.alloc)), 'and the other way round, the smallest of all');
+    eq(sizes[(await keys())[0]], Math.min(...Object.values(sizes)), 'and the other way round, the smallest of all');
     // searching covers every group too, and a link to a group far down the list shows that group
     await go(pc, C.base, 'browse?x=2');
     await tid(pc, 'group').first().waitFor();
@@ -2280,10 +2354,134 @@ try {
       eq(await row.locator('[data-testid="todo-run"]').count(), 0, 'so its todo has no Run button');
       eq(await row.getByRole('button', { name: 'Copy' }).count(), 1, 'but a Copy button');
     }
+    const copies = await copyTexts(pd);
+    ok(copies.length >= 2, `copy buttons on the page: ${copies.join(' | ')}`);
+    eq(copies.filter((x) => /[\r\n]/.test(x)).length, 0, 'each copies one line, never two commands');
   });
 
   await ctxD.close();
   await stopFixture(D);
+
+  // ---------------------------------------------------------------- flow E: a tool without a command, and its folders
+  const E = await startFixture(['--no-history']);
+  const ctxE = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  const pe = await newPage(ctxE, 'E');
+  const fileE = (rel) => path.join(E.home, rel);
+  const hasRmRf = (page) => page.evaluate(() => document.documentElement.innerHTML.includes('rm -rf'));
+
+  await step('a tool without a command lists its folders; Move to Trash opens a plan of exactly that folder, which runs through the normal page', async () => {
+    await pe.goto(E.url);
+    await pe.waitForSelector('#nav a');
+    // npx, gradle: no official cleanup command. Their domain is off by default, so switch it on and scan
+    fs.mkdirSync(fileE('.npm/_npx/abc123'), { recursive: true });
+    fs.writeFileSync(fileE('.npm/_npx/abc123/index.js'), 'x'.repeat(5000));
+    for (const [dir, name] of [['modules-2', 'a.bin'], ['jars-9', 'b.bin']]) {
+      fs.mkdirSync(fileE(`.gradle/caches/${dir}`), { recursive: true });
+      fs.writeFileSync(fileE(`.gradle/caches/${dir}/${name}`), 'y'.repeat(7000));
+    }
+    const old30 = (Date.now() - 30 * 86400 * 1000) / 1000;   // a run skips what is newer than the rule's minimum age
+    for (const rel of ['.npm/_npx/abc123/index.js', '.npm/_npx/abc123', '.npm/_npx', '.gradle/caches/modules-2/a.bin', '.gradle/caches/jars-9/b.bin', '.gradle/caches/modules-2', '.gradle/caches/jars-9', '.gradle/caches']) fs.utimesSync(fileE(rel), old30, old30);
+    const settings = (await api(pe, 'GET', '/api/settings')).body.settings;
+    eq((await api(pe, 'PUT', '/api/settings', { domains: [...settings.domains, 'dev-shared'] })).status, 200, 'the dev-shared area is switched on');
+    await go(pe, E.base, 'overview');
+    await scan(pe);
+    const tools = (await api(pe, 'GET', '/api/native')).body.tools;
+    const npx = tools.find((x) => x.rule_id === 'dev.npx');
+    const gradle = tools.find((x) => x.rule_id === 'dev.gradle');
+    ok(npx && gradle, `both tools hold something: ${tools.map((x) => x.rule_id).join(', ')}`);
+    eq(npx.command, null, 'npx has no command');
+    eq(npx.folders.map((f) => f.path).join(), '~/.npm/_npx', 'its folder is listed with its full path');
+    eq(gradle.folders.length, 2, 'gradle lists a folder per child of its cache');
+    await go(pe, E.base, 'overview?tab=tools');
+    await tid(pe, 'native').waitFor();
+    const npxRow = tid(pe, 'native-folder').and(pe.locator('[data-rule="dev.npx"]'));
+    eq(await npxRow.count(), 1, 'the table has a folder row for npx');
+    eq((await npxRow.locator('td.c-name .path').innerText()).trim(), '~/.npm/_npx', 'with its exact path');
+    eq(await npxRow.getAttribute('data-item'), npx.folders[0].item, 'and its item key');
+    eq(await tid(pe, 'native-folder').and(pe.locator('[data-rule="dev.gradle"]')).count(), 2, 'gradle has one row per folder');
+    eq(await pe.locator('[data-rule="dev.npx"] button[data-action="run"], [data-rule="dev.npx"] [data-copy]').count(), 0, 'no Run button and nothing to copy and paste for npx');
+    ok(!(await hasRmRf(pe)), 'no element on the page says rm -rf');
+    eq((await copyTexts(pe)).filter((x) => x.includes('\n')).length, 0, 'every copy button copies one line');
+    // the second folder of gradle: its plan holds that folder alone
+    const chosen = gradle.folders[0];
+    const other = gradle.folders[1];
+    const row = tid(pe, 'native-folder').and(pe.locator(`[data-item="${chosen.item}"]`));
+    eq((await row.locator('td.c-name .path').innerText()).trim(), chosen.path, 'the chosen folder shows its path');
+    await row.getByTestId('native-trash').click();
+    await pe.waitForURL(/#\/plan\//);
+    const planE = pe.url().split('/plan/')[1];
+    await tid(pe, 'plan-head').waitFor();
+    eq(await tid(pe, 'plan-head').innerText(), `Cleanup list · 1 item · ${await fmtBytes(pe, chosen.bytes)}`, 'the plan is one item of that size');
+    const entries = (await api(pe, 'GET', `/api/plans/${planE}/entries?limit=1000`)).body.rows;
+    eq(entries.length, 1, 'one entry');
+    eq(entries[0].path, chosen.path, 'it is the chosen folder');
+    eq(entries[0].action, 'trash', 'moved to the Trash');
+    eq((await api(pe, 'GET', `/api/plans/${planE}`)).body.state, 'draft', 'a draft: nothing has moved yet');
+    ok(!(await hasRmRf(pe)), 'the plan page does not say rm -rf either');
+    await pe.waitForFunction(() => document.querySelector('[data-testid="confirm-run"]')?.disabled === false);
+    await startRun(pe);
+    await tid(pe, 'result').waitFor({ timeout: 30000 });
+    const done = (await api(pe, 'GET', `/api/plans/${planE}/entries?limit=1000`)).body.rows;
+    eq(done.map((x) => `${x.path}:${x.state}`).join(), `${chosen.path}:done`, 'the entry is done');
+    eq((await api(pe, 'GET', `/api/plans/${planE}`)).body.result.counts.done, 1, 'and it is the only one the run did');
+    // the fixture's macOS only records a trash call: what must still be there is everything else
+    const leaf = other.path.split('/').pop();
+    for (const rel of ['.npm/_npx/abc123/index.js', `.gradle/caches/${leaf}/${leaf === 'modules-2' ? 'a.bin' : 'b.bin'}`, 'Library/Logs/Acme/old0.log']) {
+      ok(fs.existsSync(fileE(rel)), `${rel} is untouched`);
+    }
+    ok(!(await hasRmRf(pe)), 'and the result page says no rm -rf');
+    // the same on the pages that list the tools
+    for (const route of ['browse?report_only=1', 'insights?tab=todos', 'overview?tab=tools']) {
+      await go(pe, E.base, route);
+      await sleep(800);
+      ok(!(await hasRmRf(pe)), `${route}: no rm -rf`);
+      eq((await copyTexts(pe)).filter((x) => x.includes('\n')).length, 0, `${route}: every copy button copies one line`);
+    }
+  });
+
+  await ctxE.close();
+  await stopFixture(E);
+
+  // ---------------------------------------------------------------- flow F: the data folder is deleted under a running portal
+  const F = await startFixture(['--no-history']);
+  const ctxF = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  const pf = await newPage(ctxF, 'F');
+
+  await step('the data folder is deleted while the portal runs: it is made again, one warning is shown, and the next scan works', async () => {
+    await pf.goto(F.url);
+    await pf.waitForSelector('#nav a');
+    await go(pf, F.base, 'overview');
+    await scan(pf);
+    const info = JSON.parse(fs.readFileSync(path.join(F.data_dir, 'portal.json'), 'utf8'));
+    const warning = pf.locator('.toast', { hasText: 'The Disk Steward data folder was deleted while Disk Steward was running. It has been recreated empty' });
+    eq(await warning.count(), 0, 'no warning before');
+    fs.rmSync(F.data_dir, { recursive: true, force: true });
+    const started = Date.now();
+    await warning.first().waitFor({ timeout: 8000 });
+    ok(Date.now() - started <= 5000, `the warning came within a few seconds: ${Date.now() - started}ms`);
+    ok((await warning.first().innerText()).includes('Run a new scan to continue'), 'it says what was lost and what to do');
+    eq(await warning.count(), 1, 'and appears once');
+    ok(fs.existsSync(F.data_dir), 'the folder is there again');
+    await pf.waitForFunction(() => document.querySelector('[data-testid="scan-button"]'));
+    // across pages: still the one warning, and no second one when the others are opened
+    await go(pf, F.base, 'browse');
+    await sleep(1500);
+    await go(pf, F.base, 'settings');
+    await sleep(3500);   // longer than the folder watcher's period
+    eq(await warning.count(), 1, 'still once after moving between pages');
+    const again = JSON.parse(fs.readFileSync(path.join(F.data_dir, 'portal.json'), 'utf8'));
+    eq(again.port, info.port, 'portal.json is back, with the same port');
+    eq(again.pid, info.pid, 'and the same process');
+    await go(pf, F.base, 'overview');
+    await pf.getByText('No scan yet').waitFor();
+    eq(await tid(pf, 'hero').count(), 0, 'Overview has no scan to show: what was in the old database is gone');
+    await scan(pf);
+    ok((await tid(pf, 'last-scan').innerText()).includes('Scan #1'), 'a new scan from the page succeeds, in the new database');
+    eq(await warning.count(), 1, 'and the warning is still the only one');
+  });
+
+  await ctxF.close();
+  await stopFixture(F);
 
   // console errors and CSP violations over the whole run
   const unexpected = [];

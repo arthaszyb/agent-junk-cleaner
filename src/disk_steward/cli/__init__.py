@@ -215,6 +215,8 @@ def main(argv: Optional[List[str]] = None, app_factory: Optional[Callable[[], Ap
         if lang:
             app.locale = lang
         locale = app.locale
+        if app.check_data_dir():   # deleted since the App opened it: say so once on stderr, then carry on empty
+            _print_error(StewardError(ErrorCode.DATA_DIR_RECREATED, 'error.DATA_DIR_RECREATED'), locale, False)
         if app.recovery and app.recovery['entries']:
             print(i18n.t('cli.recover.notice', locale, count=len(app.recovery['entries'])), file=sys.stderr)
         return _COMMANDS[args.command](app, args, lambda key, **a: i18n.t(key, locale, **a))

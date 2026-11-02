@@ -7,11 +7,11 @@ import { icon } from './icons.mjs';
 
 const TOAST_ICON = { ok: 'check', warn: 'alert', error: 'alert', info: 'info' };
 
-export function toast(text, kind = 'info') {
+export function toast(text, kind = 'info', ms = kind === 'error' ? 12000 : 5000) {
   const box = document.getElementById('toasts');
   const el = h('div', { class: `toast toast-${kind}`, role: kind === 'error' ? 'alert' : null }, icon(TOAST_ICON[kind] || 'info', 18), h('span', { text }));
   box.append(el);
-  setTimeout(() => el.remove(), kind === 'error' ? 12000 : 5000);
+  setTimeout(() => el.remove(), ms);
 }
 
 export function reportError(e) {
@@ -107,7 +107,14 @@ export function subTabs(tabs, active, pick) {
 
 export const tabPanel = (key, ...children) => h('div', { class: 'tab-panel', role: 'tabpanel', id: `tabpanel-${key}`, 'aria-labelledby': `tab-${key}` }, children);
 
+// One exact line, for a command or a path: a line break in it would run in a terminal as two commands.
 export function copyButton(text) {
+  if (/[\r\n]/.test(text)) throw new Error(`copyButton copies one line, got ${JSON.stringify(text)}`);
+  return h('button', { class: 'btn small', data: { copy: text } }, icon('copy', 14), t('portal.common.copy'));
+}
+
+// Text of several lines that is never run, such as the advisor prompt pasted into a chat.
+export function copyTextButton(text) {
   return h('button', { class: 'btn small', data: { copy: text } }, icon('copy', 14), t('portal.common.copy'));
 }
 

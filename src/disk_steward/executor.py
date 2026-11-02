@@ -287,7 +287,7 @@ class Executor:
             except (KeyError, OSError):
                 continue   # gone or unknown to the catalog: run() skips it for its own reason
             if found_now is None or found_now.rule_id != entry.rule_id or found_now.tier.value == 'protected' \
-                    or entry.action not in rule.actions:
+                    or entry.action not in rule.actions + rule.manual_actions:
                 # Same test as run(): the verdict changed since the scan, so this entry will be kept.
                 slot = blockers.setdefault('rules_changed', {'count': 0, 'alloc': 0})
                 slot['count'] += 1
@@ -534,7 +534,7 @@ class Executor:
 
         match = self._classify(run.classifier, run.context_cache, entry, rule, st)
         if match is None or match.rule_id != entry.rule_id or match.tier.value == 'protected' \
-                or entry.action not in rule.actions:
+                or entry.action not in rule.actions + rule.manual_actions:
             return _skip('skip.rules_changed')
         self._hook('after_classify', entry)
 

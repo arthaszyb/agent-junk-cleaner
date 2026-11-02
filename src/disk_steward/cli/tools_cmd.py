@@ -37,7 +37,8 @@ def tools(app: App, args: argparse.Namespace, T: Translator) -> int:
     head = (T('native.cli.col.rule'), T('native.cli.col.size'), T('native.cli.col.command'),
             T('native.cli.col.status'))
     print(table([head] + [(r['rule_id'], fmt_bytes(r['bytes']), r['command'] or '-',
-                           T('native.cli.status.runnable') if r['runnable'] else r['reason']) for r in rows], 'lrll'))
+                           T('native.cli.status.runnable') if r['runnable']
+                           else T('native.cli.status.trash') if r['folders'] else r['reason']) for r in rows], 'lrll'))
     for r in rows:
         if r['targets']:
             print('\n' + T('native.cli.targets'))

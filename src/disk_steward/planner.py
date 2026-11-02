@@ -10,7 +10,7 @@ from . import queries
 from .catalog import Catalog, load_catalog
 from .macos import MacOS
 from .model import Action, DecisionState, Entry, ErrorCode, Plan, PlanState, Spec, StewardError, Unit
-from .selection import Resolution, resolve
+from .selection import Resolution, _action_totals, resolve
 from .settings import Settings, settings_hash
 from .store import Store
 
@@ -99,6 +99,51 @@ def create_plan(store: Store, spec: Spec, now: float, expected: Mapping[str, Any
                 catalog_hash=scan['catalog_hash'], facts_hash=scan['facts_hash'], settings_hash=scan['settings_hash'],
                 spec=spec.to_json(), revision=1, entries_digest=digest, state=PlanState.DRAFT,
                 totals={k: res.summary[k] for k in TOTALS_FIELDS})
+    queries.insert_plan(store, plan, rows)
+    return plan
+
+
+def create_manual_plan(store: Store, scan_id: int, item_key: str, action: Action, now: float, settings: Settings,
+                       mac: MacOS, *, catalog: Optional[Catalog] = None) -> Plan:
+    """A draft plan of one item of a report-only group, with one of its rule's manual_actions: the Move to Trash of
+    the tools table. It is checked like any plan when it runs. Refusals: INVALID error.spec_stale (not the latest
+    scan), RULES_CHANGED, NOT_FOUND (no such item), INVALID error.manual_not_allowed (the rule does not offer the
+    action for one folder), UNAVAILABLE error.trash_unavailable."""
+    cat = catalog or load_catalog(settings)
+    with store.read_snapshot():
+        scan = store.scan(scan_id)
+        latest = store.latest_scan()
+        if latest is None or latest['id'] != scan_id:
+            raise _stale(scan_id, None if latest is None else latest['id'], None)
+        current = {'catalog_hash': cat.hash, 'settings_hash': settings_hash(settings)}
+        which = [name for name, value in current.items() if scan[name] != value]
+        if which:
+            raise StewardError(ErrorCode.RULES_CHANGED, 'error.RULES_CHANGED', which=which)
+        row = next((r for r in queries.plan_item_rows(store, scan_id) if r[0] == item_key), None)
+    if row is None:
+        raise StewardError(ErrorCode.NOT_FOUND, 'error.NOT_FOUND', what='item', id=item_key)
+    key, path, unit, rule_id, group_key, alloc, reclaim, dev, ino, size, mtime, birth, nlink, files, newest = row
+    rule = cat.rule(rule_id)
+    if action not in rule.manual_actions:
+        raise StewardError(ErrorCode.INVALID, 'error.manual_not_allowed', action=action.value, rule_id=rule_id)
+    if action == Action.TRASH and not mac.trash_available():
+        raise StewardError(ErrorCode.UNAVAILABLE, 'error.trash_unavailable')
+    # The same fingerprint JSON as create_plan writes, and the digest over the one entry.
+    if unit == Unit.BUNDLE.value:
+        fp = f'{{"alloc":{alloc},"dev":{dev},"files":{files},"ino":{ino},"newest_ns":{newest}}}'
+    else:
+        fp = f'{{"birth_ns":{birth},"dev":{dev},"ino":{ino},"mtime_ns":{mtime},"nlink":{nlink},"size":{size}}}'
+    plan_id = secrets.token_hex(12)
+    threshold = rule.min_age_floor_days
+    rows = [(plan_id, 1, key, path, unit, action.value, rule_id, group_key, threshold, alloc, reclaim, fp,
+             'pending', '', 0, None, now)]
+    digest = hashlib.sha256(f'[[1,{json.dumps(key)},"{action.value}",{fp}]]'.encode('utf-8')).hexdigest()
+    spec = Spec(scan_id=scan_id, include={key: action})
+    totals = {'count': 1, 'alloc': alloc, 'reclaim': reclaim,
+              'by_action': {action.value: _action_totals(action, [1, alloc, reclaim])}, 'warnings': []}
+    plan = Plan(id=plan_id, created_at=now, expires_at=now + PLAN_TTL_SECONDS, scan_id=scan_id,
+                catalog_hash=scan['catalog_hash'], facts_hash=scan['facts_hash'], settings_hash=scan['settings_hash'],
+                spec=spec.to_json(), revision=1, entries_digest=digest, state=PlanState.DRAFT, totals=totals)
     queries.insert_plan(store, plan, rows)
     return plan
 

@@ -137,7 +137,7 @@ Registered detectors: `claude_versions`, `desktop_engines`, `claude_plugins`, `c
   - With no match the result is `Match(rule_id='unknown', tier=PROTECTED, domain=root.domain, kind=UNKNOWN, group_key='unknown:<first 3 segments>')`. Under `~/Library/{Application Support,Caches,Logs}` the key keeps four segments.
 - `file_context(path) -> (in_git_tree, db_dir)` works out the same two flags from disk, for code that classifies one path later (the executor).
 - Group key: `rule.id` when `group_depth` is None, otherwise `f'{rule.id}:{first group_depth logical segments}'`. Refinements may override it. A protected variant of an unprotected rule gets the marker `#protected` after the rule id, so a group never mixes protected and selectable items.
-- **Taint:** a bundle whose `walk_bundle` returns a non-empty `taint` is stored with tier PROTECTED and evidence `evidence.tainted`, except when its rule is report-only (a module cache full of file names that look like credentials is only listed). Taints, in reporting order: mount, foreign_owner, immutable, dataless, git, database, credential, unreadable. Name taints (database, credential) are skipped for the kinds `old-version`, `update-leftover`, `project-deps` and `runtime`.
+- **Taint:** a bundle whose `walk_bundle` returns a non-empty `taint` is stored with tier PROTECTED and evidence `evidence.tainted`, except when its rule is report-only and offers no `manual_actions` (a module cache full of file names that look like credentials is only listed; one whose folders can go to the Trash is guarded like any other). Taints, in reporting order: mount, foreign_owner, immutable, dataless, git, database, credential, unreadable. Name taints (database, credential) are skipped for the kinds `old-version`, `update-leftover`, `project-deps` and `runtime`.
 
 **Scanner.** `scanner.scan(store, classifier, catalog, bases, mac, settings, domains, progress, cancel, prune=True) -> scan_id`:
 
@@ -154,6 +154,7 @@ Registered detectors: `claude_versions`, `desktop_engines`, `claude_plugins`, `c
 
 SQLite in WAL mode with `busy_timeout=5000`, `synchronous=NORMAL` and one connection per thread. `meta.schema_version` drives migrations (currently 3). New files are created with `auto_vacuum=INCREMENTAL`. Writes that must be on the disk before a source file is unlinked (`add_archive`, `set_archive_state`) go through `_durable()`, which switches to `synchronous=FULL` and `fullfsync=ON` for that statement. A lost claim or outcome elsewhere is re-derived from the disk by recovery.
 
+- **Deleted data dir.** An open SQLite connection keeps working on an unlinked file, so every `_conn()` compares the file's `(st_dev, st_ino)` with the one the Store created or adopted. A missing or different file makes the Store create the folder (0700) and a fresh database, bump a generation counter and call `on_recreated` (`App._data_dir_recreated`: lock file, non-default settings, an audit line, the `data_dir.recreated` event). A thread that still holds a connection of an older generation, such as a running scan or cleanup, gets `StewardError(DATA_DIR_RECREATED)` from every store call until it begins a new operation with `Store.check()` (`App.check_data_dir()`, called at the start of each portal API request and CLI command); the executor's existing lock check stops a run before it claims the next entry. The portal also rewrites `portal.json` (same port, pid and secret) from a 2 s watcher thread and at the start of each request.
 - **Retention.** Items, groups, scan roots and scan errors are kept for the latest done scan only. `finish_scan(..., 'done')` drops every other scan's rows, garbage-collects unused `dirs` and `evidence`, then runs `incremental_vacuum` and a WAL truncate. The `scans` rows, `group_history`, `scan_totals`, plans, archives, advice and specs are never pruned; the entries of a finished plan are compacted after a week (see Plan retention). A plan entry carries its path and fingerprint, so a plan runs without its scan's rows (the executor reads that scan's row for extra evidence only if it still exists); report growth reads `group_history`. `finish_scan(..., prune=False)` leaves the rows for the caller to drop with `prune_scans()` (`App.scan` does that after it migrated the selections, because the migration notes compare against the old scan). A cancelled or failed scan removes the items it already streamed in (`discard_items`).
 - **Item rows are compact.** An item stores its directory (`dirs.id`) and file name, its group (`groups.id`) and its evidence (`evidence.id`, deduplicated). Its rule, tier, domain, kind and unit are NULL while they equal the group's `i_*` values. A `groups` row exists from the first item added to it (`provider IS NULL` until `add_groups` fills in the rest and the row becomes visible to `groups()`), so a scan streams items in batches before the totals are known. `Store` and `queries` return the same `Item` objects and light rows.
 - **Schema 2** replaced the scan tables of schema 1 with the compact ones above. Opening a schema 1 file drops them (the next scan rebuilds them), keeps everything else and runs one `VACUUM`.
@@ -240,6 +241,10 @@ create_plan(store, spec, now, expected, settings, mac, *, catalog=None, notes=No
   #   RULES_CHANGED (catalog or settings hash differs from the scan's), DIGEST_MISMATCH (added/removed lists, 50 each),
   #   EMPTY_PLAN (carries the per-state breakdown)
   # entries ordered by group, then alloc desc; expires_at = now + 24h; revision = 1
+create_manual_plan(store, scan_id, item_key, action, now, settings, mac, *, catalog=None) -> Plan
+  # one item of a report-only group with an action from its rule's manual_actions (Move to Trash in the tools table);
+  # refusals: INVALID error.spec_stale, RULES_CHANGED, NOT_FOUND, INVALID error.manual_not_allowed,
+  #   UNAVAILABLE error.trash_unavailable. It runs like any plan; the executor accepts actions + manual_actions.
   # entries_digest = sha256 of canonical JSON [[seq, item_key, action, fp]] over ALL entries; fixed at creation.
   # Exclusions never change it; they bump `revision`. run() needs both, so a client acting on a stale view fails.
 validate_for_run(plan, current_hashes, now, revision, entries_digest) -> None
@@ -322,6 +327,7 @@ App(home=None, data_dir=None, mac=None, clock=time.time, locale=None, settings=N
   insights(window_days=30, locale=None) -> dict      # the Insights page; see below
   native_tools(locale=None) -> list[dict]            # report-only groups with their command and whether it can run
   start_native(rule_id, target, command) -> job; run_native(rule_id, target, command, on_event=None) -> result; check_native(...)
+  trash_plan(item_key) -> plan  # a draft plan that moves one of a row's `folders` to the Trash
   compact_plans() -> int        # plan retention; runs at start and after every scan and run
   plan_result(plan_id) -> dict | None   # the run summary of a finished plan; plan(plan_id) adds compacted_at
   archives() / restore(archive_id) / purge_archive(archive_id)
@@ -366,7 +372,7 @@ TODOs come from fixed rules, each linking to the page that shows the same number
 
 ## Native commands (`native.py`)
 
-Report-only groups (shared developer caches, Ollama models) are never deleted by Disk Steward. For the tools that have an official cleanup command, the service can start that command, after the user confirmed its exact text. `App.native_tools(locale)` lists the report-only groups of the latest scan that hold data, biggest first: `{rule_id, group, label, bytes, items, command, runnable, reason, tool, tool_version, targets}`. `command` is the text a run must be given back; `reason` (translated) says why a row cannot run; `tool` is what `shutil.which` found; `tool_version` is cached for ten minutes; `targets` is `[{name, size, bytes, command}]` for Ollama (the models `ollama list` shows) and `None` otherwise.
+Report-only groups (shared developer caches, Ollama models) are never part of a selection. For the tools that have an official cleanup command, the service can start that command, after the user confirmed its exact text. A tool without one has `manual_actions = (trash,)` on its rule: each of its folders can go to the Trash through a cleanup list of that one folder (`trash_plan`), reviewed and run like any plan, so the portal never asks anyone to delete by hand. `App.native_tools(locale)` lists the report-only groups of the latest scan that hold data, biggest first: `{rule_id, group, label, bytes, items, command, runnable, reason, tool, tool_version, targets, folders}`. `command` is the text a run must be given back; `reason` (translated) says why a row cannot run; `tool` is what `shutil.which` found; `tool_version` is cached for ten minutes; `targets` is `[{name, size, bytes, command}]` for Ollama (the models `ollama list` shows) and `None` otherwise; `folders` is `[{item, path, bytes}]` for a tool whose rule offers Move to Trash (`None` otherwise, and when `/usr/bin/trash` is missing the reason says so).
 
 The registry is a dict in `native.py`, rule id to argv list. It is never built from a request, a scan or an advisor reply:
 
@@ -380,7 +386,7 @@ The registry is a dict in `native.py`, rule id to argv list. It is never built f
 | `dev.coresimulator` | `xcrun simctl delete unavailable`, runnable only when `xcrun simctl help` exits 0 (else the reason names `sudo xcode-select -s /Applications/Xcode.app`) |
 | `ollama.models` | `ollama rm NAME` per target; NAME must equal a name `ollama list` shows now |
 
-`dev.playwright` (`npx` may download code) and `dev.npx` (a plain `rm -rf`) are copy-only with a reason. Rules with no official command (gradle, maven, cargo, Xcode derived data and device support, puppeteer, node-gyp, puccinialin) have `command` null and the reason "no official cleanup command".
+`dev.playwright` (`npx` may download code) is copy-only with a reason. Rules with no official command (npx, gradle, maven, cargo, Xcode derived data and device support, puppeteer, node-gyp, puccinialin) have `command` null and list their `folders` for Move to Trash; `start_native` refuses them with the reason "no official cleanup command".
 
 `start_native(rule_id, target, command)` refuses, in order: an unknown or non-report-only rule (`INVALID error.native_unknown`), a tool that cannot run (`UNAVAILABLE error.native_not_runnable`, details `reason_key`, `reason_args`, `reason`), a bad or missing Ollama target (`error.native_bad_target`, `error.native_target_required`), a `command` that is not the display string it derives (`error.native_command_changed`, details `expected`), and a busy slot or operation lock (`BUSY`). The tool is looked up with `shutil.which` at that moment. The job then runs on the same slot as a scan or a plan run (job kind `native`; `cancel()` stops it, pause is refused):
 
@@ -417,12 +423,13 @@ The registry is a dict in `native.py`, rule id to argv list. It is never built f
 | GET | `/api/apps` | Sizes of the applications (`du`, cached per `App`) |
 | GET | `/api/native` | `{tools: [...]}`: the report-only groups of the latest scan with their native command (see Native commands) |
 | POST | `/api/native/run` | `{rule_id, target?, command}` starts a native command as a job (`command` must be the text the row showed; 400, 503 or 423 as specified) |
+| POST | `/api/native/trash` | `{item}` (one of a row's `folders`): a draft plan that moves that folder to the Trash; the plan page runs it |
 | GET | `/api/insights?window=` | The Insights page; `window` is 0 (all history), 7, 30 or 90 days, default 30, anything else is a 400 |
 | GET | `/api/groups?domain=&tier=` | Groups with the session's selection summary |
 | GET | `/api/items?group=&order=&offset=&limit=&q=` | Items with decisions |
-| GET | `/api/spec` | The selection, summary and digest |
+| GET | `/api/spec` | The selection, summary and digest, and `qualify`: per selectable group the items and size that qualify (ticked: what the selection holds; unticked: what ticking it would select with the same filter), its total, and what holds the rest back (`too_recent`, `floor_held`, `excluded`, `other`, with the thresholds) |
 | GET | `/api/spec/notes` | What the last scan carry-over dropped |
-| POST | `/api/spec/ops` | Apply selection ops |
+| POST | `/api/spec/ops` | Apply selection ops; answers like `GET /api/spec` |
 | POST | `/api/plans` | Create a plan from `{expected}` (409 or 422 as specified) |
 | GET | `/api/plans/<id>` | Plan detail with `pending` totals |
 | GET | `/api/plans/<id>/entries?state=&offset=&limit=` | Plan entries |

@@ -1,5 +1,6 @@
 // Browse: groups with their selection state, their items with the server's decision for each, and the sticky
-// summary. The browser sends ops and renders what the server answers; it never works out what qualifies.
+// summary. The browser sends ops and renders what the server answers; it never works out what qualifies: each group's
+// main figures are the server's `qualify` entry (what the group selects when ticked, or would select if it were).
 // The address names a filter (#/browse?tier=junk&state=too_recent): the page says what it shows and how much, and
 // the figures are the ones of the overview row the link came from.
 import { api, ApiError } from '../api.mjs';
@@ -225,23 +226,65 @@ export function create() {
       advice.result.stale ? [' ', badge(t('portal.advisor.stale'), 'warn')] : null);
   }
 
-  // the tier (a group of another tool's is that, once), and what else the page says about the group
-  function tierCell(g, sel, s) {
-    return [groupBadge(g), sel && s.selected === 0 ? badge(t('portal.browse.none_qualify'), 'warn') : null];
+  // What a selectable group selects when ticked (the server's figures, also for a group that is not ticked yet).
+  const qualifyOf = (g) => (preview || !selection.qualify ? null : selection.qualify[g.key] || null);
+  const noneQualify = (q) => q !== null && q.items === 0 && q.total > 0;
+
+  // the main figures of a group: what qualifies when it can be ticked, else everything it holds
+  function figures(g) {
+    if (preview) return g.match;
+    const q = qualifyOf(g);
+    return q ? { items: q.items, alloc: q.alloc } : { items: g.items, alloc: g.alloc };
   }
 
-  // how many qualify (with the selection) or how many items there are, and what is held back
-  function countCell(g, sel, s) {
+  // what holds items of a group back, in words
+  function heldList(q) {
+    const extra = [];
+    if (q.too_recent) extra.push(t('portal.browse.n_too_recent', { count: fmtCount(q.too_recent) }));
+    if (q.floor_held) extra.push(t('portal.browse.n_floor_held', { count: fmtCount(q.floor_held) }));
+    if (q.excluded) extra.push(t('portal.browse.n_excluded', { count: fmtCount(q.excluded) }));
+    if (q.other) extra.push(t('portal.browse.n_other', { count: fmtCount(q.other) }));
+    return extra;
+  }
+
+  // why a group adds nothing: one cause when it holds all of the items, the list when there are several
+  function whyNone(q) {
+    const all = (n, key, args) => (n === q.total ? pluralCount(key, n, args) : null);
+    return all(q.too_recent, 'portal.browse.why_recent', { days: q.min_age_days })
+      || all(q.floor_days > 0 ? q.floor_held : -1, 'portal.browse.why_floor', { days: q.floor_days })   // a 0-day floor holds only future-dated items
+      || all(q.excluded, 'portal.browse.why_excluded')
+      || all(q.other, 'portal.browse.why_other')
+      || t('portal.browse.why_mixed', { list: heldList(q).join(' · ') });
+  }
+
+  // "of 5 items · 740 KiB total", when the group holds more than what qualifies
+  const ofTotal = (g, q) => (q.items === q.total ? null : pluralCount('portal.browse.of_total', q.total, { size: fmtBytes(g.alloc) }));
+
+  // items of a group that is not ticked but that the user included one by one: the panel counts them
+  const inSelection = (g, sel) => {
+    const n = sel ? 0 : selection.summary.groups[g.key].selected;
+    return n ? pluralCount('portal.browse.in_selection', n) : null;
+  };
+
+  // the tier (a group of another tool's is that, once)
+  function tierCell(g) {
+    return [groupBadge(g)];
+  }
+
+  // how many items qualify and what is held back (a preview: how many match)
+  function countCell(g, sel) {
     if (preview) return h('span', { 'data-testid': 'group-match', text: pluralCount('portal.hero.items', g.match.items) });
     const matched = g.match && g.match.items !== g.items
       ? h('span', { class: 'sub', text: t('portal.filter.matched', { count: fmtCount(g.match.items), size: fmtBytes(g.match.alloc) }) }) : null;
-    if (!selectable(g) || !sel) return [h('span', { text: pluralCount('portal.hero.items', g.items) }), matched];
-    const extra = [];
-    if (s.too_recent) extra.push(t('portal.browse.n_too_recent', { count: fmtCount(s.too_recent) }));
-    if (s.floor_held) extra.push(t('portal.browse.n_floor_held', { count: fmtCount(s.floor_held) }));
-    if (s.excluded) extra.push(t('portal.browse.n_excluded', { count: fmtCount(s.excluded) }));
-    return [h('strong', { 'data-testid': 'group-qualify', text: t('portal.browse.qualify', { selected: fmtCount(s.selected), total: fmtCount(s.total) }) }),
-      extra.length ? h('span', { class: 'sub', text: extra.join(' · ') }) : null, matched];
+    const q = qualifyOf(g);
+    if (!q) return [h('span', { text: pluralCount('portal.hero.items', g.items) }), matched];
+    const total = ofTotal(g, q);
+    const held = noneQualify(q) ? whyNone(q) : heldList(q).join(' · ');
+    const own = inSelection(g, sel);
+    return [h('strong', { 'data-testid': 'group-qualify', text: pluralCount('portal.hero.items', q.items) }),
+      total ? h('span', { class: 'sub', 'data-testid': 'group-of-total', text: total }) : null,
+      held ? h('span', { class: 'sub', 'data-testid': noneQualify(q) ? 'group-why' : 'group-held', text: held }) : null,
+      own ? h('span', { class: 'sub', text: own }) : null, matched];
   }
 
   function itemRow(g, it) {
@@ -313,14 +356,16 @@ export function create() {
 
   function groupBody(g) {
     const sel = preview ? null : selection.spec.groups[g.key];
-    const s = preview ? null : selection.summary.groups[g.key];
+    const q = qualifyOf(g);
+    const none = noneQualify(q);
+    const main = figures(g);
     const isOpen = open.has(g.key);
     const canSelect = !preview && selectable(g);
     const { name, where } = splitLabel(g);
     const check = canSelect ? h('input', { type: 'checkbox', checked: Boolean(sel), 'aria-label': t('portal.browse.select_group', { label: g.label }),
       data: { change: 'toggle-group', key: g.key }, 'data-fid': `grp:${g.key}` })
       : h('span', { class: 'lock', 'aria-hidden': 'true' }, !preview && g.tier === 'protected' ? icon('lock', 16) : null);
-    const size = fmtBytes(preview ? g.match.alloc : g.alloc);
+    const size = fmtBytes(main.alloc);
     const metaMd = [t(`domain.${g.domain}`), groupAgo(g)].join(' · ');
     const row = h('tr', { class: 'group-row group-head' },
       h('td', { class: 'c-check' }, check),
@@ -329,25 +374,25 @@ export function create() {
         where ? h('span', { class: 'sub' }, midPath(where)) : null,
         // a narrow table folds columns under the name: area and age first, then (and only then) the tier and the figures
         h('span', { class: 'sub meta-md' }, metaMd),
-        h('span', { class: 'sub meta-sm' }, dotLabel(groupTier(g), t(`portal.tier.${groupTier(g)}`)), ' · ', [size, preview ? pluralCount('portal.hero.items', g.match.items)
-          : (selectable(g) && sel ? t('portal.browse.qualify', { selected: fmtCount(s.selected), total: fmtCount(s.total) }) : pluralCount('portal.hero.items', g.items))].join(' · ')),
+        h('span', { class: 'sub meta-sm' }, dotLabel(groupTier(g), t(`portal.tier.${groupTier(g)}`)), ' · ',
+          [size, pluralCount('portal.hero.items', main.items), q && !none ? ofTotal(g, q) : null, none ? whyNone(q) : null].filter(Boolean).join(' · ')),
         adviceLine(g)),
-      h('td', { class: 'c-tier hide-sm' }, h('span', { class: 'tags' }, tierCell(g, sel, s))),
+      h('td', { class: 'c-tier hide-sm' }, h('span', { class: 'tags' }, tierCell(g))),
       h('td', { class: 'c-area hide-md', text: t(`domain.${g.domain}`) }),
-      h('td', { class: 'c-count hide-sm' }, countCell(g, sel, s)),
+      h('td', { class: 'c-count hide-sm' }, countCell(g, sel)),
       h('td', { class: 'c-size num hide-sm', text: size }),
       h('td', { class: 'c-changed hide-md', text: groupAgo(g) }),
       h('td', { class: 'c-chev' }, h('button', { class: 'icon-btn small', 'aria-expanded': String(isOpen), 'aria-label': t('portal.col.expand'),
         data: { action: 'toggle-open', key: g.key }, 'data-fid': `chev:${g.key}` }, icon('chevron', 16))));
-    return h('tbody', { class: `group-body tier-${g.tier}${isOpen ? ' open' : ''}`, id: `group-${g.key}`, 'data-testid': 'group', 'data-key': g.key },
+    return h('tbody', { class: `group-body tier-${g.tier}${isOpen ? ' open' : ''}${none ? ' none-qualify' : ''}`, id: `group-${g.key}`, 'data-testid': 'group',
+      'data-key': g.key, 'data-ticked': sel ? '1' : '0', 'data-qualify-items': main.items, 'data-qualify-alloc': main.alloc },
       row, isOpen ? h('tr', { class: 'detail-row' }, h('td', { colspan: 8 }, itemsPanel(g))) : null);
   }
 
   function groupGetters() {
     return {
       name: (g) => g.label.toLowerCase(), tier: (g) => TIER_RANK[groupTier(g)], area: (g) => t(`domain.${g.domain}`),
-      count: (g) => (preview ? g.match.items : (selection.summary.groups[g.key] ? selection.summary.groups[g.key].selected : g.items)),
-      size: (g) => (preview ? g.match.alloc : g.alloc), changed: (g) => g.newest_ns,
+      count: (g) => figures(g).items, size: (g) => figures(g).alloc, changed: (g) => g.newest_ns,
     };
   }
 
@@ -376,6 +421,16 @@ export function create() {
     // what can be cleaned first; within a tier the server's order (biggest first) stands
     return groups.filter((g) => !text || g.label.toLowerCase().includes(text) || g.key.toLowerCase().includes(text))
       .sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier]);
+  }
+
+  // The header counts what qualifies in the groups listed; everything they hold stays as the second figure. A list with
+  // nothing to tick (report-only, protected, a preview) has no qualifying figure and counts what it holds.
+  function headerParts() {
+    const mine = preview || !selection.qualify ? [] : groups.map((g) => selection.qualify[g.key]).filter(Boolean);
+    if (!mine.length) return [h('strong', { text: pluralCount('portal.filter.header', scope.items, { title: describe(), size: fmtBytes(scope.alloc) }) })];
+    const sum = (field) => mine.reduce((n, q) => n + q[field], 0);
+    return [h('strong', { 'data-testid': 'header-qualify', text: pluralCount('portal.filter.header_qualify', sum('items'), { title: describe(), size: fmtBytes(sum('alloc')) }) }),
+      ' ', h('span', { class: 'muted', 'data-testid': 'header-all', text: pluralCount('portal.filter.header_of', scope.items, { size: fmtBytes(scope.alloc) }) })];
   }
 
   // the side panel ------------------------------------------------------------------------------------------
@@ -437,7 +492,7 @@ export function create() {
         h('p', { class: 'browse-header', id: 'browse-header', 'data-testid': 'browse-header' }),
         h('div', { class: 'browse-layout' }, h('div', { class: 'browse-main' }, h('div', { id: 'browse-toolbar' }), listEl), summaryEl));
     }
-    replace(root.querySelector('#browse-header'), h('strong', { text: pluralCount('portal.filter.header', scope.items, { title: describe(), size: fmtBytes(scope.alloc) }) }));
+    replace(root.querySelector('#browse-header'), ...headerParts());
     const visible = visibleGroups();
     nativeSlot = flt.report_only === '1' ? h('div', { class: 'native-slot' }) : null;
     replace(root.querySelector('#browse-toolbar'), filterBar(), advice && advice.error ? h('p', { class: 'banner banner-warn', text: t('portal.browse.advice_error', { reason: advice.error }) }) : null, nativeSlot);

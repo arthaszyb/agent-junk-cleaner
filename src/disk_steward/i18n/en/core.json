@@ -69,6 +69,7 @@
   "error.REVISION_MISMATCH": "The plan was edited after you opened it. Reload and try again.",
   "error.IN_PROGRESS": "Some of these entries are already running or finished.",
   "error.UNAVAILABLE": "This is not available on this Mac.",
+  "error.DATA_DIR_RECREATED": "The Disk Steward data folder was deleted while Disk Steward was running. It has been recreated empty: the scan history, cleanup history, audit log and archives that were in it are gone. Run a new scan to continue.",
   "error.busy": "Another Disk Steward operation is already running. Wait for it to finish.",
   "error.trash_unavailable": "Move to Trash needs macOS 15 or later (/usr/bin/trash).",
   "error.invalid_path": "Invalid path: {path}",
@@ -146,5 +147,6 @@
   "error.confirm_required": "This is not a terminal. Pass --yes to run without confirmation.",
   "error.confirm_mismatch": "The confirmation did not match. Nothing was run.",
   "attention.archive_unverified": "Removed, but its archive no longer verifies: {detail}",
-  "skip.last_used_unknown": "Its last-used date could not be read, so it cannot be judged idle"
+  "skip.last_used_unknown": "Its last-used date could not be read, so it cannot be judged idle",
+  "error.manual_not_allowed": "{rule_id} does not offer {action} for a single folder."
 }

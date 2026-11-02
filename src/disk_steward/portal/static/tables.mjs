@@ -32,15 +32,12 @@ export function sortRows(rows, state, getters) {
   });
 }
 
-// "~/Library/Application Support/…/Cache/blob1": the start gives way to an ellipsis, the end (the part that tells
+// "…Support/Claude/Cache/blob1": the start gives way to an ellipsis, the end (the part that tells
 // paths apart) never does. The whole path is the tooltip.
-export function midPath(path, tail = 26) {
-  let cut = path.length - tail;
-  if (cut <= 0) return h('span', { class: 'path', title: path, text: path });
-  const slash = path.indexOf('/', cut);
-  if (slash > 0 && slash < path.length - 3) cut = slash;
-  return h('span', { class: 'path path-mid', title: path },
-    h('span', { class: 'head', text: path.slice(0, cut) }), h('span', { class: 'tail', text: path.slice(cut) }));
+export function midPath(path) {
+  // One text node, cut at its start by CSS so the end stays in view. Two boxes side by side were copied with a line
+  // break between them, and a pasted "~/Library⏎/Caches/x" runs as `rm -rf ~/Library` first.
+  return h('span', { class: 'path path-mid', title: path }, h('span', { dir: 'ltr', text: path }));
 }
 
 // kind: an entity (junk, review, report_only, protected, outside, free) or neutral.

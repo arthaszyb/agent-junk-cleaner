@@ -38,6 +38,7 @@ CONTENT_TYPES = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset
                  '.svg': 'image/svg+xml'}
 STATIC_SEGMENT = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 PACKAGE = 'disk_steward.portal'
+WATCH_SECONDS = 2.0           # how often an idle portal looks for a deleted data dir
 
 
 def read_static(rel: str) -> Optional[Tuple[bytes, str]]:
@@ -194,6 +195,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle(self, method: str) -> None:
         host = self._check_host()
+        self.server.ensure_findable()
         parts = urlsplit(self.path)
         path = parts.path
         query = {k: v[-1] for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
@@ -261,6 +263,9 @@ class PortalServer(ThreadingHTTPServer):
         self.launch_secret = secrets.token_urlsafe(32)
         self.default_locale = default_locale
         self._thread: Optional[threading.Thread] = None
+        self._info: Dict[str, Any] = {}
+        self._watch_stop = threading.Event()
+        self._watcher: Optional[threading.Thread] = None
         super().__init__((HOST, port), _Handler)
         self.port: int = self.server_address[1]
 
@@ -321,13 +326,36 @@ class PortalServer(ThreadingHTTPServer):
         existing = launch.running_info(data_dir)
         if existing is not None and int(existing['pid']) != os.getpid():
             raise StewardError(ErrorCode.BUSY, 'portal.cli.already_running', pid=existing['pid'], port=existing['port'])
-        launch.write_info(data_dir, {'port': self.port, 'pid': os.getpid(), 'started_at': time.time(),
-                                     'launch_secret': self.launch_secret})
+        self._info = {'port': self.port, 'pid': os.getpid(), 'started_at': time.time(),
+                      'launch_secret': self.launch_secret}
+        launch.write_info(data_dir, self._info)
         # a short poll interval: shutdown() waits for the loop to notice it, half a second by default
         self._thread = threading.Thread(target=self.serve_forever, args=(0.05,), name='disk-steward-portal', daemon=True)
         self._thread.start()
+        self._watcher = threading.Thread(target=self._watch, name='disk-steward-watch', daemon=True)
+        self._watcher.start()
+
+    def ensure_findable(self) -> None:
+        """If the data dir was deleted, make it again and write portal.json back, so that `portal --url` finds this
+        portal. Without it the portal would keep serving a browser tab nobody else can reach."""
+        self.app.check_data_dir()
+        path = self.app.data_dir / launch.FILENAME
+        if self._info and not path.exists():
+            launch.write_info(self.app.data_dir, self._info)
+
+    def _watch(self) -> None:
+        # Between requests nobody else would notice; an open page long-polls, but a closed one does not.
+        while not self._watch_stop.wait(WATCH_SECONDS):
+            try:
+                self.ensure_findable()
+            except Exception:
+                traceback.print_exc(file=sys.stderr)   # keep watching; the next tick or request tries again
 
     def stop(self) -> None:
+        self._watch_stop.set()
+        if self._watcher is not None:
+            self._watcher.join()
+            self._watcher = None
         if self._thread is not None:
             self.shutdown()
             self._thread.join()

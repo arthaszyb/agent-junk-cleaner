@@ -1,7 +1,6 @@
 {
   "native.reason.tool_missing": "{tool} was not found on your PATH.",
   "native.reason.copy_network": "It may download from the network. Run it yourself in a terminal.",
-  "native.reason.copy_rm": "This is a plain rm -rf. Check the path yourself, then run it in a terminal.",
   "native.reason.no_command": "No official cleanup command.",
   "native.reason.needs_xcode": "Needs full Xcode selected: sudo xcode-select -s /Applications/Xcode.app",
   "native.reason.ollama_list_failed": "`ollama list` failed: {error}",
@@ -29,5 +28,7 @@
   "native.cli.finished": "{command} exited with code {exit_code}.",
   "native.cli.result": "Before {before}, after {after}, freed {freed}.",
   "native.cli.truncated": "The output was cut after 2 MiB.",
-  "native.cli.rescanning": "Rescanning so every number follows the tool."
+  "native.cli.rescanning": "Rescanning so every number follows the tool.",
+  "native.reason.trash_unavailable": "Move to Trash needs macOS 15 or later (/usr/bin/trash).",
+  "native.cli.status.trash": "no command: Move to Trash in the portal's tools table"
 }

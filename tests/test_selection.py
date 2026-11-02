@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import m2_fixture as fx
 from disk_steward import selection
@@ -13,7 +14,7 @@ from disk_steward.macos import FakeMacOS
 from disk_steward.model import (Action, AgeBasis, DecisionState, Domain, ErrorCode, GroupSel, Kind, Rule, Spec,
                                 StewardError, Tier, Unit)
 from disk_steward.paths import item_key
-from disk_steward.selection import apply_ops, decide, resolve
+from disk_steward.selection import apply_ops, decide, resolve, resolve_for
 from disk_steward.settings import Settings
 from disk_steward.store import Store
 
@@ -710,6 +711,88 @@ class CodexWarningTests(unittest.TestCase):
         self.assertEqual(w, [{'key': 'warning.group_selected_none_qualify', 'count': 1, 'group': 'codex.state'}])
 
 
+class QualifyGroupsTests(StoreCase):
+    """g.junk (floor 1 day): j16 qualifies at 14 days, j9 is too recent, j0 (0.5 days) is held by the floor, jhl is a
+    hard link. g.review: r40 and r20 qualify. g.app is in an area that is switched off."""
+
+    def qualify(self, *ops, spec=None, trash=True):
+        spec = self.ops(*ops, spec=spec or self.empty, enabled_domains=['agent', 'app-library'])
+        res = resolve_for(self.store, spec, NOW, ENABLED, trash)
+        return spec, res, selection.qualify_groups(self.store, spec, res, ENABLED, trash)
+
+    def test_only_groups_that_can_be_ticked_are_listed(self):
+        _, _, q = self.qualify()
+        self.assertEqual(sorted(q), ['g.app', 'g.junk', 'g.review'])
+
+    def test_an_unticked_group_reports_what_ticking_it_selects(self):
+        _, _, q = self.qualify()
+        self.assertEqual({k: q['g.junk'][k] for k in ('items', 'alloc', 'total', 'too_recent', 'floor_held', 'other')},
+                         {'items': 1, 'alloc': 4000, 'total': 4, 'too_recent': 1, 'floor_held': 1, 'other': 1})
+        self.assertEqual((q['g.review']['items'], q['g.review']['alloc']), (2, 8000))
+        self.assertEqual((q['g.junk']['min_age_days'], q['g.junk']['floor_days']), (14, 1))
+
+    def test_ticking_a_group_changes_nothing_in_its_figures_and_the_selection_reads_the_same(self):
+        spec, res, before = self.qualify()
+        self.assertEqual(res.summary['count'], 0)
+        ticked, res, after = self.qualify({'op': 'select_group', 'group': 'g.junk', 'on': True})
+        self.assertEqual(before, after)
+        self.assertEqual((res.summary['count'], res.summary['alloc']), (before['g.junk']['items'], before['g.junk']['alloc']))
+
+    def test_ticked_groups_add_up_to_the_selection_exactly(self):
+        spec, res, q = self.qualify(
+            {'op': 'select_group', 'group': 'g.junk', 'on': True}, {'op': 'select_group', 'group': 'g.review', 'on': True},
+            {'op': 'toggle_item', 'item': 'r20', 'on': False},                      # excluded by the user
+            {'op': 'toggle_item', 'item': 'j9', 'on': True})                        # "Include anyway"
+        ticked = [k for k in q if k in spec.groups]
+        self.assertEqual(sum(q[k]['items'] for k in ticked), res.summary['count'])
+        self.assertEqual(sum(q[k]['alloc'] for k in ticked), res.summary['alloc'])
+        self.assertEqual((res.summary['count'], q['g.review']['items'], q['g.review']['excluded']), (3, 1, 1))
+        self.assertEqual(q['g.junk']['too_recent'], 0)             # j9 is selected now
+        self.assertEqual(q['g.app']['items'], 0)                   # not ticked: what it would do, nothing is selected from it
+
+    def test_a_group_with_only_too_recent_items_reports_zero_and_why(self):
+        _, res, q = self.qualify({'op': 'select_group', 'group': 'g.review', 'on': True},
+                                 {'op': 'set_filter', 'min_age_days': 100})
+        self.assertEqual((q['g.review']['items'], q['g.review']['too_recent'], q['g.review']['total']), (0, 2, 2))
+        self.assertEqual(q['g.review']['min_age_days'], 100)
+        self.assertEqual(res.summary['count'], 0)
+
+    def test_a_per_group_age_override_is_the_threshold(self):
+        _, _, q = self.qualify({'op': 'select_group', 'group': 'g.review', 'on': True, 'min_age_days': 30})
+        self.assertEqual((q['g.review']['items'], q['g.review']['min_age_days']), (1, 30))
+        self.assertEqual(q['g.junk']['min_age_days'], 14)          # the override belongs to its group only
+
+    def test_a_group_held_by_the_rule_floor_says_so(self):
+        _, _, q = self.qualify({'op': 'set_filter', 'min_age_days': 0})
+        self.assertEqual((q['g.junk']['items'], q['g.junk']['floor_held'], q['g.junk']['too_recent']), (2, 1, 0))
+        self.assertEqual(q['g.junk']['min_age_days'], 1)           # the floor is stricter than the filter
+
+    def test_a_group_the_user_excluded_entirely(self):
+        _, _, q = self.qualify({'op': 'select_group', 'group': 'g.review', 'on': True},
+                               {'op': 'toggle_item', 'item': 'r40', 'on': False}, {'op': 'toggle_item', 'item': 'r20', 'on': False})
+        self.assertEqual((q['g.review']['items'], q['g.review']['excluded'], q['g.review']['total']), (0, 2, 2))
+
+    def test_items_that_can_never_be_cleaned_count_as_other(self):
+        _, _, q = self.qualify()
+        self.assertEqual((q['g.app']['items'], q['g.app']['other'], q['g.app']['total']), (0, 1, 1))
+
+    def test_a_trash_less_mac_leaves_a_trash_group_with_nothing(self):
+        _, _, q = self.qualify({'op': 'select_group', 'group': 'g.junk', 'on': True, 'action': 'trash'}, trash=False)
+        self.assertEqual((q['g.junk']['items'], q['g.junk']['other']), (0, 4))
+
+    def test_one_more_resolve_for_unticked_groups_and_none_when_everything_is_ticked(self):
+        spec = self.ops({'op': 'select_group', 'group': 'g.junk', 'on': True})
+        res = resolve_for(self.store, spec, NOW, ENABLED, True)
+        with mock.patch('disk_steward.selection.resolve_for', side_effect=resolve_for) as m:
+            selection.qualify_groups(self.store, spec, res, ENABLED, True)
+        self.assertEqual(m.call_count, 1)
+        every = self.ops(*[{'op': 'select_group', 'group': k, 'on': True} for k in ('g.junk', 'g.review', 'g.app')])
+        res = resolve_for(self.store, every, NOW, ENABLED, True)
+        with mock.patch('disk_steward.selection.resolve_for', side_effect=resolve_for) as m:
+            selection.qualify_groups(self.store, every, res, ENABLED, True)
+        self.assertEqual(m.call_count, 0)
+
+
 class PerformanceTests(unittest.TestCase):
     N = 150_000
     BUDGET = 1.5
@@ -739,6 +822,12 @@ class PerformanceTests(unittest.TestCase):
             self.assertEqual(res.summary['total'], self.N)
             self.assertGreater(res.summary['count'], 0)
             self.assertLess(best, self.BUDGET)
+            t0 = time.perf_counter()
+            figures = selection.qualify_groups(store, spec, res, ('agent',), True)    # 100 unticked groups: one more resolve
+            took = time.perf_counter() - t0
+            print(f'qualify_groups({self.N} items): {took:.3f}s')
+            self.assertEqual(len(figures), n_groups)
+            self.assertLess(took, self.BUDGET)
 
 
 if __name__ == '__main__':

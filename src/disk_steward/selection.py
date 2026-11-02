@@ -133,8 +133,9 @@ def resolve(store: Store, spec: Spec, now: float, settings: Settings, mac: MacOS
 
 
 def resolve_for(store: Store, spec: Spec, now: float, enabled_domains: Iterable[str],
-                trash_available: bool) -> Resolution:
-    """resolve() with the two facts it takes from settings and the Mac passed in directly."""
+                trash_available: bool, with_warnings: bool = True) -> Resolution:
+    """resolve() with the two facts it takes from settings and the Mac passed in directly. `with_warnings=False`
+    skips the Codex pair scan for a caller that only reads the counters."""
     store.scan(spec.scan_id)  # NOT_FOUND for an unknown scan
     enabled = frozenset(enabled_domains)
     groups = {g.key: g for g in store.groups(spec.scan_id)}
@@ -198,9 +199,40 @@ def resolve_for(store: Store, spec: Spec, now: float, enabled_domains: Iterable[
                        'floor_held_alloc': v[_FLOOR_ALLOC], 'excluded': v[_EXCL], 'protected': v[_PROT]}
                    for k, v in sorted(per_group.items())},
     }
-    summary['warnings'] = _warnings(store, spec, groups, decisions, summary['groups'])
+    summary['warnings'] = _warnings(store, spec, groups, decisions, summary['groups']) if with_warnings else []
     canonical = json.dumps([spec.scan_id, spec.version, [list(p) for p in selected]], separators=(',', ':'))
     return Resolution(decisions, summary, hashlib.sha256(canonical.encode('utf-8')).hexdigest(), now)
+
+
+def qualify_groups(store: Store, spec: Spec, res: Resolution, enabled_domains: Iterable[str],
+                   trash_available: bool) -> Dict[str, Dict[str, Any]]:
+    """What each selectable group (not protected, with a cleanup action) selects at `res.now`, and what holds the
+    rest back, as {key: {items, alloc, total, too_recent, too_recent_alloc, floor_held, floor_held_alloc, excluded,
+    other, min_age_days, floor_days}}. A ticked group reads straight from `res`, so its figures are the ones the
+    selection summary adds up. An unticked group is judged as if it were ticked with the default selector: one more
+    resolve over a copy of the spec with those groups ticked, filter, includes and excludes unchanged. Nothing is
+    selected or planned from this; it is what the page shows next to each group."""
+    groups = [g for g in store.groups(spec.scan_id) if g.tier != Tier.PROTECTED and g.actions]
+    shadow = {g.key: GroupSel() for g in groups if g.key not in spec.groups}
+    per = res.summary['groups']
+    if shadow:
+        ticked = Spec(scan_id=spec.scan_id, version=spec.version, filter_min_age_days=spec.filter_min_age_days,
+                      groups={**spec.groups, **shadow}, include=spec.include, exclude=spec.exclude)
+        would = resolve_for(store, ticked, res.now, enabled_domains, trash_available, with_warnings=False)
+        per = {k: (would.summary['groups'] if k in shadow else per)[k] for k in (g.key for g in groups)}
+    out: Dict[str, Dict[str, Any]] = {}
+    for g in groups:
+        v = per[g.key]
+        sel = spec.groups.get(g.key)
+        wanted = (sel.min_age_days if sel is not None and sel.min_age_days is not None
+                  else max(g.default_min_age_days or 0.0, spec.filter_min_age_days))
+        out[g.key] = {
+            'items': v['selected'], 'alloc': v['alloc'], 'total': v['total'], 'too_recent': v['too_recent'],
+            'too_recent_alloc': v['too_recent_alloc'], 'floor_held': v['floor_held'],
+            'floor_held_alloc': v['floor_held_alloc'], 'excluded': v['excluded'],
+            'other': v['total'] - v['selected'] - v['too_recent'] - v['floor_held'] - v['excluded'],
+            'min_age_days': max(g.min_age_floor_days, wanted), 'floor_days': g.min_age_floor_days}
+    return out
 
 
 def _action_totals(action: Action, v: List[int]) -> Dict[str, Any]:

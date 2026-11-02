@@ -129,7 +129,16 @@ class ApiTests(SurfaceCase):
         self.assertEqual(body['tools'][0]['rule_id'], 'dev.homebrew')
         zh = self.c.get('/api/native', headers={'Accept-Language': 'zh-CN'})[1]['tools']
         row = {r['rule_id']: r for r in zh}['dev.gradle']
-        self.assertEqual(row['reason'], '没有官方清理命令。')
+        self.assertEqual((row['reason'], [f['path'] for f in row['folders']]), (None, ['~/.gradle/caches/modules-2']))
+
+    def test_move_to_trash_makes_a_draft_plan_of_one_folder(self):
+        folder = {r['rule_id']: r for r in self.app.native_tools('en')}['dev.gradle']['folders'][0]
+        status, plan = self.c.post('/api/native/trash', {'item': folder['item']})
+        self.assertEqual(status, 200, plan)
+        self.assertEqual((plan['state'], plan['totals']['count']), ('draft', 1))
+        self.assertEqual(self.c.post('/api/native/trash', {'item': folder['item']}, token=False)[0], 401)
+        self.assertEqual(self.c.post('/api/native/trash', {'item': 3})[0], 400)
+        self.assertEqual(self.c.get('/api/native/trash')[0], 405)
 
     def test_it_needs_the_session_and_the_right_methods(self):
         self.assertEqual(self.c.get('/api/native', token=False)[0], 401)
@@ -248,7 +257,7 @@ class CliTests(SurfaceCase):
         self.assertEqual((code, err), (0, ''))
         for text in ('Report-only tools that have a cleanup command', 'Rule', 'dev.homebrew', 'brew cleanup --prune=all',
                      'can run', '500.00 KiB', 'ollama.models', 'ollama rm <model>', 'dev.gradle',
-                     'No official cleanup command.', 'dev.playwright', 'npx playwright uninstall --all',
+                     "no command: Move to Trash in the portal's tools table", 'dev.playwright', 'npx playwright uninstall --all',
                      'Models you can remove with --target NAME:', 'llama3:latest', '2.0 GB', 'tiny:1b',
                      'Run one with: disk-steward tools run RULE_ID'):
             self.assertIn(text, out)
@@ -256,7 +265,7 @@ class CliTests(SurfaceCase):
     def test_the_list_in_chinese_and_as_json(self):
         code, out, _ = self.run_cli('tools', '--lang', 'zh-CN')
         self.assertEqual(code, 0)
-        for text in ('有自带清理命令的仅展示工具', '规则', '可运行', '没有官方清理命令。', '可用 --target NAME 移除的模型：'):
+        for text in ('有自带清理命令的仅展示工具', '规则', '可运行', '无官方命令：可在门户的工具表格里移到废纸篓', '可用 --target NAME 移除的模型：'):
             self.assertIn(text, out)
         code, out, _ = self.run_cli('tools', '--json', '--lang', 'zh-CN')
         rows = json.loads(out)

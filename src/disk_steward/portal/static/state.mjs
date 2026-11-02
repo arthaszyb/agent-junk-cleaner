@@ -47,7 +47,7 @@ export function setJobFromResponse(job) { setJob(job); }
 
 function after(events) {
   const types = events.map((e) => e.type);
-  if (types.some((x) => x === 'scan.done' || x === 'scan.failed' || x === 'run.finished' || x === 'recover.done' || x === 'native.done' || x === 'native.failed')) {
+  if (types.some((x) => x === 'scan.done' || x === 'scan.failed' || x === 'run.finished' || x === 'recover.done' || x === 'data_dir.recreated' || x === 'native.done' || x === 'native.failed')) {
     return loadState();
   }
   if (types.some((x) => x.startsWith('run.') || x.startsWith('scan.') || x.startsWith('native.'))) return refreshJob();
@@ -73,6 +73,7 @@ async function loop() {
       if (r.events.length) {
         await after(r.events);
         emit('events', r.events);
+        for (const ev of r.events) if (ev.type === 'data_dir.recreated') emit('data_dir_recreated', ev.data);
       }
     } catch (e) {
       if (stopped || (e instanceof ApiError && e.status === 401)) return;
